@@ -7,12 +7,8 @@ geotab.addin.reeferMonitor = function (api, state) {
     };
 
     let elResultsPanel = document.getElementById('results-panel');
-    let selectEl = document.getElementById('deviceSelect');
-    let currentDeviceId = null;
 
-    // Función para cargar los datos del dispositivo seleccionado
     function loadReeferData(deviceId) {
-        currentDeviceId = deviceId;
         console.log("🚀 Consultando datos para:", deviceId);
         
         const calls = Object.keys(DIAGNOSTICS_MAP).map(diagId => [
@@ -27,28 +23,37 @@ geotab.addin.reeferMonitor = function (api, state) {
         ]);
 
         api.multiCall(calls, function (results) {
-            let html = '<table>';
+            let html = '<table style="width:100%; border-collapse: collapse;">';
             results.forEach((data, index) => {
                 const name = Object.values(DIAGNOSTICS_MAP)[index];
                 const value = (data.length > 0) ? data[data.length - 1].data + " ºC" : "Sin datos";
-                html += `<tr><td>${name}</td><td><strong>${value}</strong></td></tr>`;
+                html += `<tr style="border-bottom: 1px solid #eee;"><td style="padding: 8px;">${name}</td><td style="padding: 8px;"><strong>${value}</strong></td></tr>`;
             });
             html += '</table>';
             elResultsPanel.innerHTML = html;
         });
     }
 
-    // Inicializar el selector
     function initSelector() {
+        let selectEl = document.getElementById('deviceSelect');
+        
+        // Verificación de seguridad: si el HTML no existe, avisamos en consola y paramos
+        if (!selectEl) {
+            console.error("❌ ERROR: No se encuentra el elemento <select id='deviceSelect'> en tu index.html. Por favor, añádelo.");
+            elResultsPanel.innerHTML = "<p style='color:red;'>Error de configuración: Falta el selector en index.html</p>";
+            return;
+        }
+
         api.call("Get", { typeName: "Device" }, function (devices) {
+            // Ordenamos dispositivos para que sea más fácil encontrar el remolque
+            devices.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+            
             selectEl.innerHTML = devices.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
             
-            // Evento al cambiar de dispositivo
             selectEl.onchange = function() {
                 loadReeferData(this.value);
             };
 
-            // Cargar primero de la lista por defecto
             if (devices.length > 0) {
                 loadReeferData(devices[0].id);
             }
@@ -60,9 +65,7 @@ geotab.addin.reeferMonitor = function (api, state) {
             initSelector();
             callback();
         },
-        focus: function (api, state) {
-            // No hacemos nada automático aquí para evitar errores con el ID del mapa
-        },
+        focus: function (api, state) {},
         blur: function () {}
     };
 };
