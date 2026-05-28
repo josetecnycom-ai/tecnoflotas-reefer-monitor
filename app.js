@@ -1,28 +1,31 @@
 /**
  * Add-in de Monitorización de Frigoríficos Híbrido - Tecnoflotas
- * Versión corregida contra errores 400 de validación de API
+ * Versión corregida con los IDs nativos de cadena de frío oficiales de Geotab
  */
 geotab.addin.reeferMonitor = function (api, state) {
     
-    // Diccionario con los IDs de sistema oficiales del SDK de Geotab
+    // Mapeo idéntico a los identificadores nativos de tu entorno Geotab
     const DIAGNOSTICS_MAP = {
-        "DiagnosticBluetoothThermographTemperature1Id": "Termógrafo - Temperatura 1",
-        "DiagnosticBluetoothThermographTemperature2Id": "Termógrafo - Temperatura 2",
+        "RefrigerationUnitStatusId": "Estado de la Unidad",
         "DiagnosticCargoTemperatureZone1Id": "Temperatura Carga Zona 1",
+        "RefrigerationUnitSetTemperatureZone1Id": "Set Point Zona 1",
         "DiagnosticCargoTemperatureZone2Id": "Temperatura Carga Zona 2",
-        "DiagnosticRefrigerationUnitTemperatureZone1Id": "Unidad Frío - Temp. Zona 1",
-        "DiagnosticRefrigerationUnitTemperatureZone2Id": "Unidad Frío - Temp. Zona 2",
-        "DiagnosticRefrigerationUnitSetTemperatureZone1Id": "Set Point Zona 1",
-        "DiagnosticRefrigerationUnitSetTemperatureZone2Id": "Set Point Zona 2",
-        "DiagnosticRefrigerationUnitStatusId": "Estado de la Unidad",
-        "DiagnosticRefrigerationUnitTotalNumberAlarmsId": "Total Alertas Activas"
+        "RefrigerationUnitSetTemperatureZone2Id": "Set Point Zona 2",
+        "DiagnosticCargoTemperatureZone3Id": "Temperatura Carga Zona 3",
+        "RefrigerationUnitSetTemperatureZone3Id": "Set Point Zona 3",
+        "DiagnosticDoor1StatusId": "Estado Puerta 1",
+        "DiagnosticDoor2StatusId": "Estado Puerta 2",
+        "RefrigerationUnitDischargeTemperatureZone1Id": "Temp. Impulsión Zona 1",
+        "RefrigerationUnitDischargeTemperatureZone2Id": "Temp. Impulsión Zona 2",
+        "RefrigerationUnitDischargeTemperatureZone3Id": "Temp. Impulsión Zona 3"
     };
 
+    // Parámetros de control que mostraremos en la tabla aunque no traigan registros históricos
     const ALWAYS_VISIBLE = [
-        "DiagnosticRefrigerationUnitSetTemperatureZone1Id",
-        "DiagnosticRefrigerationUnitSetTemperatureZone2Id",
-        "DiagnosticRefrigerationUnitStatusId",
-        "DiagnosticRefrigerationUnitTotalNumberAlarmsId"
+        "RefrigerationUnitStatusId",
+        "RefrigerationUnitSetTemperatureZone1Id",
+        "RefrigerationUnitSetTemperatureZone2Id",
+        "RefrigerationUnitSetTemperatureZone3Id"
     ];
 
     let elResultsPanel;
@@ -36,7 +39,6 @@ geotab.addin.reeferMonitor = function (api, state) {
             return;
         }
 
-        // Consultamos el acoplamiento de remolques de forma segura
         api.call("Get", {
             typeName: "TrailerAttachment",
             search: {
@@ -50,7 +52,6 @@ geotab.addin.reeferMonitor = function (api, state) {
                 const activeAttachment = attachments.find(a => !a.toDate || new Date(a.toDate) > now);
                 
                 if (activeAttachment && activeAttachment.trailer) {
-                    // Si el remolque tiene un localizador asignado, usamos su ID de dispositivo
                     if (activeAttachment.trailer.device && activeAttachment.trailer.device.id) {
                         targetFetchId = activeAttachment.trailer.device.id;
                     } else {
@@ -59,18 +60,16 @@ geotab.addin.reeferMonitor = function (api, state) {
                 }
             }
 
-            // Ejecutamos la telemetría con el ID resultante
             fetchTelemetryData(targetFetchId);
 
         }, function (error) {
-            // CONTROL DE ERROR PASO 1: Si falla TrailerAttachment (Error 400), continuamos con el ID principal
             console.warn("Aviso: No se pudo verificar TrailerAttachment, usando dispositivo directo:", currentDeviceId);
             fetchTelemetryData(currentDeviceId);
         });
     }
 
     function fetchTelemetryData(assetId) {
-        // Construimos el multicall asegurando que no vayan parámetros vacíos
+        // Construimos el array de llamadas multicall de forma limpia
         const calls = Object.keys(DIAGNOSTICS_MAP).map(diagnosticId => {
             return [
                 "Get",
@@ -79,7 +78,7 @@ geotab.addin.reeferMonitor = function (api, state) {
                     search: {
                         deviceSearch: { id: assetId },
                         diagnosticSearch: { id: diagnosticId },
-                        fromDate: new Date(new Date() - 86400000).toISOString() // Últimas 24h
+                        fromDate: new Date(new Date() - 86400000).toISOString() // Últimas 24 horas
                     }
                 }
             ];
@@ -90,10 +89,10 @@ geotab.addin.reeferMonitor = function (api, state) {
             let chartDatasets = [];
             
             const colorPalette = {
-                "DiagnosticBluetoothThermographTemperature1Id": "#3b82f6", 
-                "DiagnosticBluetoothThermographTemperature2Id": "#f97316", 
-                "DiagnosticCargoTemperatureZone1Id": "#10b981",   
-                "DiagnosticCargoTemperatureZone2Id": "#ef4444"    
+                "DiagnosticCargoTemperatureZone1Id": "#10b981", // Verde
+                "DiagnosticCargoTemperatureZone2Id": "#ef4444", // Rojo
+                "DiagnosticCargoTemperatureZone3Id": "#3b82f6", // Azul
+                "RefrigerationUnitDischargeTemperatureZone1Id": "#f59e0b" // Ámbar
             };
 
             Object.keys(DIAGNOSTICS_MAP).forEach((diagnosticId, index) => {
@@ -101,6 +100,7 @@ geotab.addin.reeferMonitor = function (api, state) {
                 const dataBlock = results[index] || [];
                 const hasData = dataBlock.length > 0;
 
+                // Ocultamos de la tabla los que no tengan datos, salvo las configuraciones base
                 if (!hasData && !ALWAYS_VISIBLE.includes(diagnosticId)) {
                     return; 
                 }
@@ -108,12 +108,16 @@ geotab.addin.reeferMonitor = function (api, state) {
                 let displayValue = "<span class='no-data'>Sin datos</span>";
                 if (hasData) {
                     let latestRecord = dataBlock[dataBlock.length - 1];
-                    displayValue = diagnosticId.includes("Temperature") ? `${parseFloat(latestRecord.data).toFixed(1)} ºC` : latestRecord.data;
+                    // Si el identificador contiene la palabra "temperature", le damos formato de grados
+                    displayValue = diagnosticId.toLowerCase().includes("temperature") 
+                        ? `${parseFloat(latestRecord.data).toFixed(1)} ºC` 
+                        : latestRecord.data;
                 }
 
                 htmlTable += `<tr><td><strong>${label}</strong></td><td>${displayValue}</td></tr>`;
 
-                if (hasData && diagnosticId.includes("Temperature") && colorPalette[diagnosticId]) {
+                // Añadimos al gráfico si es una temperatura de carga válida
+                if (hasData && diagnosticId.toLowerCase().includes("temperature") && colorPalette[diagnosticId]) {
                     const points = dataBlock.map(record => ({
                         x: new Date(record.dateTime),
                         y: parseFloat(record.data)
@@ -138,7 +142,7 @@ geotab.addin.reeferMonitor = function (api, state) {
 
         }, function (error) {
             console.error("Error crítico en el multiCall de telemetría:", error);
-            elResultsPanel.innerHTML = `<p class='error-msg'>Error al obtener registros de este activo (Verifica los IDs de diagnóstico en este entorno).</p>`;
+            elResultsPanel.innerHTML = `<p class='error-msg'>Error al procesar la telemetría del activo seleccionado.</p>`;
         });
     }
 
