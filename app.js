@@ -1,10 +1,9 @@
 /**
- * Add-in de Monitorización de Frigoríficos Híbrido - Tecnoflotas
- * Versión corregida con los IDs nativos de cadena de frío oficiales de Geotab
+ * Add-in de Monitorización de Frigoríficos - Tecnoflotas
+ * Versión corregida: Solución al crash del Date Adapter de Chart.js
  */
 geotab.addin.reeferMonitor = function (api, state) {
     
-    // Mapeo idéntico a los identificadores nativos de tu entorno Geotab
     const DIAGNOSTICS_MAP = {
         "RefrigerationUnitStatusId": "Estado de la Unidad",
         "DiagnosticCargoTemperatureZone1Id": "Temperatura Carga Zona 1",
@@ -20,7 +19,6 @@ geotab.addin.reeferMonitor = function (api, state) {
         "RefrigerationUnitDischargeTemperatureZone3Id": "Temp. Impulsión Zona 3"
     };
 
-    // Parámetros de control que mostraremos en la tabla aunque no traigan registros históricos
     const ALWAYS_VISIBLE = [
         "RefrigerationUnitStatusId",
         "RefrigerationUnitSetTemperatureZone1Id",
@@ -50,26 +48,19 @@ geotab.addin.reeferMonitor = function (api, state) {
             if (attachments && attachments.length > 0) {
                 const now = new Date();
                 const activeAttachment = attachments.find(a => !a.toDate || new Date(a.toDate) > now);
-                
                 if (activeAttachment && activeAttachment.trailer) {
-                    if (activeAttachment.trailer.device && activeAttachment.trailer.device.id) {
-                        targetFetchId = activeAttachment.trailer.device.id;
-                    } else {
-                        targetFetchId = activeAttachment.trailer.id;
-                    }
+                    targetFetchId = activeAttachment.trailer.id;
                 }
             }
-
             fetchTelemetryData(targetFetchId);
 
         }, function (error) {
-            console.warn("Aviso: No se pudo verificar TrailerAttachment, usando dispositivo directo:", currentDeviceId);
+            // Si falla por tipo de activo (ej. Trailer ID directo), procesamos directamente con el ID actual
             fetchTelemetryData(currentDeviceId);
         });
     }
 
     function fetchTelemetryData(assetId) {
-        // Construimos el array de llamadas multicall de forma limpia
         const calls = Object.keys(DIAGNOSTICS_MAP).map(diagnosticId => {
             return [
                 "Get",
@@ -89,10 +80,10 @@ geotab.addin.reeferMonitor = function (api, state) {
             let chartDatasets = [];
             
             const colorPalette = {
-                "DiagnosticCargoTemperatureZone1Id": "#10b981", // Verde
-                "DiagnosticCargoTemperatureZone2Id": "#ef4444", // Rojo
-                "DiagnosticCargoTemperatureZone3Id": "#3b82f6", // Azul
-                "RefrigerationUnitDischargeTemperatureZone1Id": "#f59e0b" // Ámbar
+                "DiagnosticCargoTemperatureZone1Id": "#10b981", 
+                "DiagnosticCargoTemperatureZone2Id": "#ef4444", 
+                "DiagnosticCargoTemperatureZone3Id": "#3b82f6", 
+                "RefrigerationUnitDischargeTemperatureZone1Id": "#f59e0b" 
             };
 
             Object.keys(DIAGNOSTICS_MAP).forEach((diagnosticId, index) => {
@@ -100,7 +91,6 @@ geotab.addin.reeferMonitor = function (api, state) {
                 const dataBlock = results[index] || [];
                 const hasData = dataBlock.length > 0;
 
-                // Ocultamos de la tabla los que no tengan datos, salvo las configuraciones base
                 if (!hasData && !ALWAYS_VISIBLE.includes(diagnosticId)) {
                     return; 
                 }
@@ -108,7 +98,6 @@ geotab.addin.reeferMonitor = function (api, state) {
                 let displayValue = "<span class='no-data'>Sin datos</span>";
                 if (hasData) {
                     let latestRecord = dataBlock[dataBlock.length - 1];
-                    // Si el identificador contiene la palabra "temperature", le damos formato de grados
                     displayValue = diagnosticId.toLowerCase().includes("temperature") 
                         ? `${parseFloat(latestRecord.data).toFixed(1)} ºC` 
                         : latestRecord.data;
@@ -116,10 +105,10 @@ geotab.addin.reeferMonitor = function (api, state) {
 
                 htmlTable += `<tr><td><strong>${label}</strong></td><td>${displayValue}</td></tr>`;
 
-                // Añadimos al gráfico si es una temperatura de carga válida
+                // Mapeo seguro de puntos usando marcas de tiempo numéricas para evitar el uso de objetos Date puros en el eje
                 if (hasData && diagnosticId.toLowerCase().includes("temperature") && colorPalette[diagnosticId]) {
                     const points = dataBlock.map(record => ({
-                        x: new Date(record.dateTime),
+                        x: new Date(record.dateTime).getTime(), // Timestamp numérico (Epoch ms)
                         y: parseFloat(record.data)
                     }));
 
@@ -130,19 +119,22 @@ geotab.addin.reeferMonitor = function (api, state) {
                         backgroundColor: 'transparent',
                         borderWidth: 2,
                         pointRadius: 1.5,
-                        tension: 0.3
+                        tension: 0.2
                     });
                 }
             });
 
             htmlTable += '</tbody></table>';
+            
+            // Renderizado prioritario de la tabla (así aseguramos visualización inmediata de datos actuales)
             elResultsPanel.innerHTML = htmlTable;
 
+            // Renderizado del gráfico libre de dependencias de fechas
             renderChart(chartDatasets);
 
         }, function (error) {
-            console.error("Error crítico en el multiCall de telemetría:", error);
-            elResultsPanel.innerHTML = `<p class='error-msg'>Error al procesar la telemetría del activo seleccionado.</p>`;
+            console.error("Error en multiCall:", error);
+            elResultsPanel.innerHTML = `<p class='error-msg'>Error al procesar la telemetría del activo.</p>`;
         });
     }
 
@@ -163,14 +155,24 @@ geotab.addin.reeferMonitor = function (api, state) {
                 maintainAspectRatio: false,
                 scales: {
                     x: {
-                        type: 'time',
-                        time: {
-                            unit: 'hour',
-                            displayFormats: { hour: 'HH:mm' }
+                        type: 'linear', // Cambiado a lineal para evitar la necesidad del Date Adapter externo
+                        ticks: {
+                            callback: function(value) {
+                                // Convertimos dinámicamente el timestamp de vuelta a formato HH:mm legible
+                                const date = new Date(value);
+                                const hh = String(date.getHours()).padStart(2, '0');
+                                const mm = String(date.getMinutes()).padStart(2, '0');
+                                return `${hh}:${mm}`;
+                            }
                         },
                         grid: { color: '#e5e7eb' }
                     },
-                    y: { grid: { color: '#e5e7eb' } }
+                    y: { 
+                        ticks: {
+                            callback: function(value) { return value + ' ºC'; }
+                        },
+                        grid: { color: '#e5e7eb' } 
+                    }
                 }
             }
         });
@@ -182,9 +184,7 @@ geotab.addin.reeferMonitor = function (api, state) {
         
         if (!selectorZone || !selectEl) return;
 
-        api.call("Get", {
-            typeName: "Device"
-        }, function (devices) {
+        api.call("Get", { typeName: "Device" }, function (devices) {
             if (devices && devices.length > 0) {
                 selectorZone.style.display = 'block';
                 selectEl.innerHTML = devices.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
@@ -197,8 +197,6 @@ geotab.addin.reeferMonitor = function (api, state) {
                     loadReeferData();
                 });
             }
-        }, function (err) {
-            console.error("Error al listar vehículos en selector Web:", err);
         });
     }
 
@@ -211,7 +209,6 @@ geotab.addin.reeferMonitor = function (api, state) {
             }
             callback();
         },
-
         focus: function (api, state) {
             if (state.device && state.device.id) {
                 currentDeviceId = state.device.id;
@@ -219,21 +216,13 @@ geotab.addin.reeferMonitor = function (api, state) {
             } else {
                 setupWebDeviceSelector();
             }
-
             if (!refreshIntervalId) {
                 refreshIntervalId = setInterval(loadReeferData, 60000);
             }
         },
-
         blur: function (api, state) {
-            if (refreshIntervalId) {
-                clearInterval(refreshIntervalId);
-                refreshIntervalId = null;
-            }
-            if (myChartInstance) {
-                myChartInstance.destroy();
-                myChartInstance = null;
-            }
+            if (refreshIntervalId) clearInterval(refreshIntervalId);
+            if (myChartInstance) myChartInstance.destroy();
             if (elResultsPanel) elResultsPanel.innerHTML = "";
         }
     };
