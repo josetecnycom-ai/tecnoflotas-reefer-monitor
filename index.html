@@ -4,14 +4,21 @@
     <meta charset="utf-8">
     <title>Monitor de Temperatura</title>
     <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <div id="reefer-monitor-container">
         <header>
             <h2>Estado de la Unidad de Refrigeración</h2>
         </header>
+        
         <div id="content">
-            <button id="btn-fetch-data" class="geotabButton">Consultar Datos Actuales</button>
+            <button id="btn-fetch-data" class="geotabButton">Actualizar Datos</button>
+            
+            <div class="chart-container">
+                <canvas id="reeferChart"></canvas>
+            </div>
+
             <div id="results-panel">
                 </div>
         </div>

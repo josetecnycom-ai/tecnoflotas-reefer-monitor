@@ -25,25 +25,30 @@ header h2 {
     background-color: #2563EB;
     color: white;
     border: none;
-    width: 100%; /* Ocupa el ancho completo en móviles para facilitar el toque */
+    width: 100%;
     padding: 12px;
     cursor: pointer;
     border-radius: 6px;
     font-weight: 600;
     font-size: 1rem;
     margin-bottom: 16px;
-    transition: background-color 0.2s;
 }
 
-.geotabButton:hover {
-    background-color: #1D4ED8;
+/* Área adaptada para la gráfica tipo image_d72a45 */
+.chart-container {
+    position: relative;
+    height: 280px;
+    width: 100%;
+    margin-bottom: 20px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 8px;
 }
 
-/* Diseño de la Tabla de Diagnósticos */
 .reefer-table {
     width: 100%;
     border-collapse: collapse;
-    margin-top: 8px;
     font-size: 0.95rem;
 }
 
@@ -59,19 +64,11 @@ header h2 {
     font-weight: 600;
     text-transform: uppercase;
     font-size: 0.75rem;
-    letter-spacing: 0.05em;
 }
 
-.reefer-table tr:last-child td {
-    border-bottom: none;
-}
-
-/* Estados */
-.loading-msg {
-    color: #0284c7;
-    font-weight: 500;
-    text-align: center;
-    padding: 20px;
+.no-data {
+    color: #94a3b8;
+    font-style: italic;
 }
 
 .error-msg {
@@ -79,10 +76,4 @@ header h2 {
     background-color: #fef2f2;
     padding: 12px;
     border-radius: 6px;
-    font-weight: 500;
-}
-
-.no-data {
-    color: #94a3b8;
-    font-style: italic;
 }
