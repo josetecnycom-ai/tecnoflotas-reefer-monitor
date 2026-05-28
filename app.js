@@ -1,11 +1,13 @@
 /**
- * Add-in de Monitorización de Frigoríficos Híbrido con detección de Remolques - Tecnoflotas
+ * Add-in de Monitorización de Frigoríficos Híbrido - Tecnoflotas
+ * Versión corregida contra errores 400 de validación de API
  */
 geotab.addin.reeferMonitor = function (api, state) {
     
+    // Diccionario con los IDs de sistema oficiales del SDK de Geotab
     const DIAGNOSTICS_MAP = {
-        "DiagnosticThermographTemperature1Id": "Termógrafo - Temperatura 1",
-        "DiagnosticThermographTemperature2Id": "Termógrafo - Temperatura 2",
+        "DiagnosticBluetoothThermographTemperature1Id": "Termógrafo - Temperatura 1",
+        "DiagnosticBluetoothThermographTemperature2Id": "Termógrafo - Temperatura 2",
         "DiagnosticCargoTemperatureZone1Id": "Temperatura Carga Zona 1",
         "DiagnosticCargoTemperatureZone2Id": "Temperatura Carga Zona 2",
         "DiagnosticRefrigerationUnitTemperatureZone1Id": "Unidad Frío - Temp. Zona 1",
@@ -26,7 +28,7 @@ geotab.addin.reeferMonitor = function (api, state) {
     let elResultsPanel;
     let refreshIntervalId = null;
     let myChartInstance = null;
-    let currentDeviceId = null; // ID de la cabeza tractora seleccionada
+    let currentDeviceId = null; 
 
     function loadReeferData() {
         if (!currentDeviceId) {
@@ -34,36 +36,41 @@ geotab.addin.reeferMonitor = function (api, state) {
             return;
         }
 
-        // 1. PASO CLAVE: Buscar qué remolque está enganchado actualmente a este vehículo
+        // Consultamos el acoplamiento de remolques de forma segura
         api.call("Get", {
             typeName: "TrailerAttachment",
             search: {
                 deviceSearch: { id: currentDeviceId }
             }
         }, function (attachments) {
-            let targetFetchId = currentDeviceId; // Por defecto, si no hay remolque, usamos el principal
+            let targetFetchId = currentDeviceId; 
 
             if (attachments && attachments.length > 0) {
-                // Filtramos el enganche que esté activo hoy (sin fecha 'toDate' o con fecha futura)
                 const now = new Date();
                 const activeAttachment = attachments.find(a => !a.toDate || new Date(a.toDate) > now);
                 
                 if (activeAttachment && activeAttachment.trailer) {
-                    targetFetchId = activeAttachment.trailer.id; // ¡Cambiamos el objetivo al ID del Remolque!
+                    // Si el remolque tiene un localizador asignado, usamos su ID de dispositivo
+                    if (activeAttachment.trailer.device && activeAttachment.trailer.device.id) {
+                        targetFetchId = activeAttachment.trailer.device.id;
+                    } else {
+                        targetFetchId = activeAttachment.trailer.id;
+                    }
                 }
             }
 
-            // 2. Lanzamos la petición de telemetría usando el ID del activo correcto
+            // Ejecutamos la telemetría con el ID resultante
             fetchTelemetryData(targetFetchId);
 
         }, function (error) {
-            console.error("Error al consultar TrailerAttachment, intentando con vehículo principal:", error);
+            // CONTROL DE ERROR PASO 1: Si falla TrailerAttachment (Error 400), continuamos con el ID principal
+            console.warn("Aviso: No se pudo verificar TrailerAttachment, usando dispositivo directo:", currentDeviceId);
             fetchTelemetryData(currentDeviceId);
         });
     }
 
-    // Ejecuta el multiCall y renderiza los componentes visuales
     function fetchTelemetryData(assetId) {
+        // Construimos el multicall asegurando que no vayan parámetros vacíos
         const calls = Object.keys(DIAGNOSTICS_MAP).map(diagnosticId => {
             return [
                 "Get",
@@ -72,7 +79,7 @@ geotab.addin.reeferMonitor = function (api, state) {
                     search: {
                         deviceSearch: { id: assetId },
                         diagnosticSearch: { id: diagnosticId },
-                        fromDate: new Date(new Date() - 86400000).toISOString() // Últimas 24 horas
+                        fromDate: new Date(new Date() - 86400000).toISOString() // Últimas 24h
                     }
                 }
             ];
@@ -83,8 +90,8 @@ geotab.addin.reeferMonitor = function (api, state) {
             let chartDatasets = [];
             
             const colorPalette = {
-                "DiagnosticThermographTemperature1Id": "#3b82f6", 
-                "DiagnosticThermographTemperature2Id": "#f97316", 
+                "DiagnosticBluetoothThermographTemperature1Id": "#3b82f6", 
+                "DiagnosticBluetoothThermographTemperature2Id": "#f97316", 
                 "DiagnosticCargoTemperatureZone1Id": "#10b981",   
                 "DiagnosticCargoTemperatureZone2Id": "#ef4444"    
             };
@@ -130,13 +137,16 @@ geotab.addin.reeferMonitor = function (api, state) {
             renderChart(chartDatasets);
 
         }, function (error) {
-            console.error("Error en multiCall de telemetría:", error);
-            elResultsPanel.innerHTML = `<p class='error-msg'>Error al obtener datos del dispositivo.</p>`;
+            console.error("Error crítico en el multiCall de telemetría:", error);
+            elResultsPanel.innerHTML = `<p class='error-msg'>Error al obtener registros de este activo (Verifica los IDs de diagnóstico en este entorno).</p>`;
         });
     }
 
     function renderChart(datasets) {
-        const ctx = document.getElementById('reeferChart').getContext('2d');
+        const canvas = document.getElementById('reeferChart');
+        if (!canvas) return;
+        
+        const ctx = canvas.getContext('2d');
         if (myChartInstance) {
             myChartInstance.destroy();
         }
@@ -156,9 +166,7 @@ geotab.addin.reeferMonitor = function (api, state) {
                         },
                         grid: { color: '#e5e7eb' }
                     },
-                    y: {
-                        grid: { color: '#e5e7eb' }
-                    }
+                    y: { grid: { color: '#e5e7eb' } }
                 }
             }
         });
@@ -186,7 +194,7 @@ geotab.addin.reeferMonitor = function (api, state) {
                 });
             }
         }, function (err) {
-            console.error("Error al listar vehículos en entorno web:", err);
+            console.error("Error al listar vehículos en selector Web:", err);
         });
     }
 
