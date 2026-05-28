@@ -1,71 +1,71 @@
 geotab.addin.reeferMonitor = function (api, state) {
-    const DIAGNOSTICS_MAP = {
-        "ThermographTemperature2Id": "Temperatura Termógrafo 2",
-        "DiagnosticCargoTemperatureZone2Id": "Temp. Carga Zona 2",
-        "a6WvyJrvcnUyjhidqtNqaTw": "Sonda Temp 1",
-        "aZ_PCPTFQJUWGgwTodd5nhA": "Sonda Temp 2"
-    };
-
     let elResultsPanel = document.getElementById('results-panel');
+    let inputSearch = document.getElementById('deviceSearch');
+    let dataList = document.getElementById('devicesList');
+    let chartInstance = null;
+    let deviceMap = {}; // Para guardar { "Nombre": "ID" }
 
-    function loadReeferData(deviceId) {
-        console.log("🚀 Consultando datos para:", deviceId);
+    function updateChart(dataPoints) {
+        const ctx = document.getElementById('reeferChart').getContext('2d');
         
-        const calls = Object.keys(DIAGNOSTICS_MAP).map(diagId => [
-            "Get", {
-                typeName: "StatusData",
-                search: {
-                    deviceSearch: { id: deviceId },
-                    diagnosticSearch: { id: diagId },
-                    fromDate: new Date(new Date().getTime() - (24 * 60 * 60 * 1000)).toISOString()
+        if (chartInstance) chartInstance.destroy(); // Destruir gráfico anterior si existe
+
+        chartInstance = new Chart(ctx, {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: 'Temperatura (ºC)',
+                    data: dataPoints,
+                    borderColor: 'rgb(75, 192, 192)',
+                    tension: 0.1
+                }]
+            },
+            options: {
+                scales: {
+                    x: { type: 'time', time: { unit: 'minute' } }
                 }
             }
-        ]);
-
-        api.multiCall(calls, function (results) {
-            let html = '<table style="width:100%; border-collapse: collapse;">';
-            results.forEach((data, index) => {
-                const name = Object.values(DIAGNOSTICS_MAP)[index];
-                const value = (data.length > 0) ? data[data.length - 1].data + " ºC" : "Sin datos";
-                html += `<tr style="border-bottom: 1px solid #eee;"><td style="padding: 8px;">${name}</td><td style="padding: 8px;"><strong>${value}</strong></td></tr>`;
-            });
-            html += '</table>';
-            elResultsPanel.innerHTML = html;
         });
     }
 
-    function initSelector() {
-        let selectEl = document.getElementById('deviceSelect');
-        
-        // Verificación de seguridad: si el HTML no existe, avisamos en consola y paramos
-        if (!selectEl) {
-            console.error("❌ ERROR: No se encuentra el elemento <select id='deviceSelect'> en tu index.html. Por favor, añádelo.");
-            elResultsPanel.innerHTML = "<p style='color:red;'>Error de configuración: Falta el selector en index.html</p>";
-            return;
-        }
-
-        api.call("Get", { typeName: "Device" }, function (devices) {
-            // Ordenamos dispositivos para que sea más fácil encontrar el remolque
-            devices.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-            
-            selectEl.innerHTML = devices.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
-            
-            selectEl.onchange = function() {
-                loadReeferData(this.value);
-            };
-
-            if (devices.length > 0) {
-                loadReeferData(devices[0].id);
+    function loadReeferData(deviceId) {
+        // Ejemplo de consulta de datos históricos (ajusta tus diagnósticos aquí)
+        api.call("Get", {
+            typeName: "StatusData",
+            search: {
+                deviceSearch: { id: deviceId },
+                diagnosticSearch: { id: "a6WvyJrvcnUyjhidqtNqaTw" }, // Ajusta según tu ID
+                fromDate: new Date(new Date().getTime() - (2 * 60 * 60 * 1000)).toISOString()
             }
+        }, function(results) {
+            // Formatear para Chart.js
+            const chartData = results.map(r => ({ x: r.dateTime, y: r.data }));
+            updateChart(chartData);
+            elResultsPanel.innerHTML = `Datos cargados: ${results.length} puntos.`;
         });
     }
 
     return {
         initialize: function (api, state, callback) {
-            initSelector();
+            api.call("Get", { typeName: "Device" }, function (devices) {
+                // Llenar el datalist
+                devices.forEach(d => {
+                    if (d.name) {
+                        let option = document.createElement('option');
+                        option.value = d.name;
+                        option.dataset.id = d.id;
+                        dataList.appendChild(option);
+                        deviceMap[d.name] = d.id;
+                    }
+                });
+
+                // Detectar selección
+                inputSearch.onchange = function() {
+                    const selectedId = deviceMap[this.value];
+                    if (selectedId) loadReeferData(selectedId);
+                };
+            });
             callback();
-        },
-        focus: function (api, state) {},
-        blur: function () {}
+        }
     };
 };
