@@ -1,10 +1,9 @@
 /**
  * Add-in de Monitorización de Frigoríficos - Tecnoflotas
- * Versión adaptada a los diagnósticos reales del Teltonika (Device b34B)
+ * Versión de depuración directa al Device ID
  */
 geotab.addin.reeferMonitor = function (api, state) {
     
-    // Mapeo exclusivo con los IDs reales extraídos de tu API Runner
     const DIAGNOSTICS_MAP = {
         "ThermographTemperature2Id": "Temperatura Termógrafo 2",
         "DiagnosticCargoTemperatureZone2Id": "Temp. Carga Zona 2 (Estándar)",
@@ -18,7 +17,6 @@ geotab.addin.reeferMonitor = function (api, state) {
         "DiagnosticOdometerId": "Odómetro"
     };
 
-    // Forzamos que se pinten en la tabla para auditar sus valores en tiempo real
     const ALWAYS_VISIBLE = [
         "ThermographTemperature2Id",
         "DiagnosticCargoTemperatureZone2Id",
@@ -35,30 +33,15 @@ geotab.addin.reeferMonitor = function (api, state) {
 
     function loadReeferData() {
         if (!currentDeviceId) {
-            elResultsPanel.innerHTML = "<p class='error-msg'>Por favor, seleccione o vincule un vehículo válido.</p>";
+            elResultsPanel.innerHTML = "<p class='error-msg'>Por favor, seleccione un vehículo.</p>";
             return;
         }
 
-        api.call("Get", {
-            typeName: "TrailerAttachment",
-            search: {
-                deviceSearch: { id: currentDeviceId }
-            }
-        }, function (attachments) {
-            let targetFetchId = currentDeviceId; 
-
-            if (attachments && attachments.length > 0) {
-                const now = new Date();
-                const activeAttachment = attachments.find(a => !a.toDate || new Date(a.toDate) > now);
-                if (activeAttachment && activeAttachment.trailer) {
-                    targetFetchId = activeAttachment.trailer.id;
-                }
-            }
-            fetchTelemetryData(targetFetchId);
-
-        }, function (error) {
-            fetchTelemetryData(currentDeviceId);
-        });
+        // CHIVATO 1: Ver qué ID exacto está usando el Add-in
+        console.log("🚀 Pidiendo datos a Geotab para el dispositivo ID:", currentDeviceId);
+        
+        // Eliminada la lógica de TrailerAttachment. Vamos directos a consultar el ID.
+        fetchTelemetryData(currentDeviceId);
     }
 
     function fetchTelemetryData(assetId) {
@@ -70,24 +53,27 @@ geotab.addin.reeferMonitor = function (api, state) {
                     search: {
                         deviceSearch: { id: assetId },
                         diagnosticSearch: { id: diagnosticId },
-                        fromDate: new Date(new Date() - 86400000).toISOString() // Últimas 24 horas
+                        // Ampliado a 48 horas por si acaso los datos son de ayer
+                        fromDate: new Date(new Date() - 172800000).toISOString() 
                     }
                 }
             ];
         });
 
         api.multiCall(calls, function (results) {
+            // CHIVATO 2: Ver exactamente qué responde Geotab
+            console.log("📦 Respuesta cruda de Geotab para ID " + assetId + ":", results);
+            
             let htmlTable = '<table class="reefer-table"><thead><tr><th>Indicador</th><th>Valor Actual</th></tr></thead><tbody>';
             let chartDatasets = [];
             
-            // Asignamos un color a cada posible variable de temperatura/sonda activa
             const colorPalette = {
-                "ThermographTemperature2Id": "#ef4444",      // Rojo
-                "DiagnosticCargoTemperatureZone2Id": "#10b981", // Verde
-                "a6WvyJrvcnUyjhidqtNqaTw": "#3b82f6",           // Azul
-                "aZ_PCPTFQJUWGgwTodd5nhA": "#f59e0b",           // Naranja
-                "aIcfQOux4g0OsCc6co8cFAg": "#8b5cf6",           // Morado
-                "aDD5B_jWgp0yi_HX_ma-7rg": "#ec4899"            // Rosa
+                "ThermographTemperature2Id": "#ef4444",      
+                "DiagnosticCargoTemperatureZone2Id": "#10b981", 
+                "a6WvyJrvcnUyjhidqtNqaTw": "#3b82f6",           
+                "aZ_PCPTFQJUWGgwTodd5nhA": "#f59e0b",           
+                "aIcfQOux4g0OsCc6co8cFAg": "#8b5cf6",           
+                "aDD5B_jWgp0yi_HX_ma-7rg": "#ec4899"            
             };
 
             Object.keys(DIAGNOSTICS_MAP).forEach((diagnosticId, index) => {
@@ -102,7 +88,6 @@ geotab.addin.reeferMonitor = function (api, state) {
                 let displayValue = "<span class='no-data'>Sin datos</span>";
                 if (hasData) {
                     let latestRecord = dataBlock[dataBlock.length - 1];
-                    // Si el ID es de temperatura o es un hash personalizado, le añadimos el sufijo ºC
                     displayValue = (diagnosticId.toLowerCase().includes("temperature") || diagnosticId.startsWith("a"))
                         ? `${parseFloat(latestRecord.data).toFixed(1)} ºC` 
                         : parseFloat(latestRecord.data).toFixed(0);
@@ -110,7 +95,6 @@ geotab.addin.reeferMonitor = function (api, state) {
 
                 htmlTable += `<tr><td><strong>${label}</strong></td><td>${displayValue}</td></tr>`;
 
-                // Si la sonda tiene datos y está en nuestra paleta, la añadimos al gráfico lineal
                 if (hasData && colorPalette[diagnosticId]) {
                     const points = dataBlock.map(record => ({
                         x: new Date(record.dateTime).getTime(), 
@@ -135,8 +119,8 @@ geotab.addin.reeferMonitor = function (api, state) {
             renderChart(chartDatasets);
 
         }, function (error) {
-            console.error("Error en multiCall:", error);
-            elResultsPanel.innerHTML = `<p class='error-msg'>Error al procesar la telemetría del activo.</p>`;
+            console.error("❌ Error en multiCall:", error);
+            elResultsPanel.innerHTML = `<p class='error-msg'>Error al procesar la telemetría.</p>`;
         });
     }
 
