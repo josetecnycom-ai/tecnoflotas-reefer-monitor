@@ -1,6 +1,6 @@
 /**
  * Add-in de Monitorización de Frigoríficos - Tecnoflotas
- * Versión de depuración directa al Device ID
+ * Versión Final: Desplegable de remolques siempre visible
  */
 geotab.addin.reeferMonitor = function (api, state) {
     
@@ -33,14 +33,11 @@ geotab.addin.reeferMonitor = function (api, state) {
 
     function loadReeferData() {
         if (!currentDeviceId) {
-            elResultsPanel.innerHTML = "<p class='error-msg'>Por favor, seleccione un vehículo.</p>";
+            elResultsPanel.innerHTML = "<p class='error-msg'>Por favor, seleccione un vehículo o remolque.</p>";
             return;
         }
 
-        // CHIVATO 1: Ver qué ID exacto está usando el Add-in
         console.log("🚀 Pidiendo datos a Geotab para el dispositivo ID:", currentDeviceId);
-        
-        // Eliminada la lógica de TrailerAttachment. Vamos directos a consultar el ID.
         fetchTelemetryData(currentDeviceId);
     }
 
@@ -53,19 +50,18 @@ geotab.addin.reeferMonitor = function (api, state) {
                     search: {
                         deviceSearch: { id: assetId },
                         diagnosticSearch: { id: diagnosticId },
-                        // Ampliado a 48 horas por si acaso los datos son de ayer
-                        fromDate: new Date(new Date() - 172800000).toISOString() 
+                        fromDate: new Date(new Date() - 172800000).toISOString() // Últimas 48 horas
                     }
                 }
             ];
         });
 
         api.multiCall(calls, function (results) {
-            // CHIVATO 2: Ver exactamente qué responde Geotab
-            console.log("📦 Respuesta cruda de Geotab para ID " + assetId + ":", results);
+            console.log("📦 Respuesta para ID " + assetId + ":", results);
             
             let htmlTable = '<table class="reefer-table"><thead><tr><th>Indicador</th><th>Valor Actual</th></tr></thead><tbody>';
             let chartDatasets = [];
+            let hasAnyData = false; // Chivato para saber si hay algún dato real
             
             const colorPalette = {
                 "ThermographTemperature2Id": "#ef4444",      
@@ -84,6 +80,8 @@ geotab.addin.reeferMonitor = function (api, state) {
                 if (!hasData && !ALWAYS_VISIBLE.includes(diagnosticId)) {
                     return; 
                 }
+
+                if (hasData) hasAnyData = true;
 
                 let displayValue = "<span class='no-data'>Sin datos</span>";
                 if (hasData) {
@@ -114,8 +112,17 @@ geotab.addin.reeferMonitor = function (api, state) {
             });
 
             htmlTable += '</tbody></table>';
-            elResultsPanel.innerHTML = htmlTable;
 
+            // Si el vehículo no tiene datos de temperatura, mostramos una advertencia
+            if (!hasAnyData) {
+                htmlTable = `
+                <div style="background:#fee2e2; color:#b91c1c; padding:15px; border-radius:6px; margin-bottom:20px; border: 1px solid #f87171;">
+                    <strong>⚠️ Sin registros de temperatura:</strong> El vehículo seleccionado no ha reportado datos térmicos en las últimas 48 horas. 
+                    Si es una tractora, asegúrate de seleccionar el <strong>Remolque/Frigorífico</strong> en el desplegable de arriba.
+                </div>` + htmlTable;
+            }
+
+            elResultsPanel.innerHTML = htmlTable;
             renderChart(chartDatasets);
 
         }, function (error) {
@@ -131,6 +138,11 @@ geotab.addin.reeferMonitor = function (api, state) {
         const ctx = canvas.getContext('2d');
         if (myChartInstance) {
             myChartInstance.destroy();
+        }
+
+        if (datasets.length === 0) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            return;
         }
 
         myChartInstance = new Chart(ctx, {
@@ -163,24 +175,40 @@ geotab.addin.reeferMonitor = function (api, state) {
         });
     }
 
-    function setupWebDeviceSelector() {
+    function setupWebDeviceSelector(initialId) {
         const selectorZone = document.getElementById('web-vehicle-selector-zone');
         const selectEl = document.getElementById('vehicle-select');
         
-        if (!selectorZone || !selectEl) return;
+        if (!selectorZone || !selectEl) {
+            // Si por algún motivo no existe el HTML del selector, cargamos el ID directo
+            currentDeviceId = initialId;
+            if (currentDeviceId) loadReeferData();
+            return;
+        }
 
         api.call("Get", { typeName: "Device" }, function (devices) {
             if (devices && devices.length > 0) {
-                selectorZone.style.display = 'block';
+                // FORZAMOS QUE EL MENÚ SEA VISIBLE SIEMPRE
+                selectorZone.style.display = 'block'; 
+                
+                // Ordenar la lista alfabéticamente para que sea fácil buscar el remolque
+                devices.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+
                 selectEl.innerHTML = devices.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
+                
+                // Pre-seleccionamos el vehículo del que venimos (ej. el Ford Focus)
+                if (initialId && devices.find(d => d.id === initialId)) {
+                    selectEl.value = initialId;
+                } 
                 
                 currentDeviceId = selectEl.value;
                 loadReeferData();
 
-                selectEl.addEventListener('change', function(e) {
+                // Escuchar cambios en el desplegable
+                selectEl.onchange = function(e) {
                     currentDeviceId = e.target.value;
                     loadReeferData();
-                });
+                };
             }
         });
     }
@@ -190,17 +218,15 @@ geotab.addin.reeferMonitor = function (api, state) {
             elResultsPanel = document.getElementById('results-panel');
             const btn = document.getElementById('btn-fetch-data');
             if (btn) {
-                btn.addEventListener('click', loadReeferData);
+                btn.onclick = loadReeferData;
             }
             callback();
         },
         focus: function (api, state) {
-            if (state.device && state.device.id) {
-                currentDeviceId = state.device.id;
-                loadReeferData();
-            } else {
-                setupWebDeviceSelector();
-            }
+            // Pasamos el ID actual (si existe) pero SIEMPRE construimos el menú
+            const startingId = (state.device && state.device.id) ? state.device.id : null;
+            setupWebDeviceSelector(startingId);
+            
             if (!refreshIntervalId) {
                 refreshIntervalId = setInterval(loadReeferData, 60000);
             }
