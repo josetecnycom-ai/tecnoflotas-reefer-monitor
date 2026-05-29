@@ -70,7 +70,6 @@ geotab.addin.reeferMonitor = function (api, state) {
                     const rawVal = lastRecord.data;
                     displayValue = cfg.type === 'temp' ? `${rawVal.toFixed(1)} ºC` : rawVal;
 
-                    // Cálculo de obsolescencia del dato
                     const recordTime = new Date(lastRecord.dateTime);
                     const diffMinutes = Math.floor((Date.now() - recordTime) / 60000);
 
@@ -110,7 +109,6 @@ geotab.addin.reeferMonitor = function (api, state) {
         const datasets = [];
         let colorIndex = 0;
 
-        // Forzamos que los límites del eje X sean de forma estricta las últimas 24 horas exactas
         const now = new Date();
         const limitsFrom = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
@@ -170,7 +168,15 @@ geotab.addin.reeferMonitor = function (api, state) {
 
     return {
         initialize: function (api, state, callback) {
+            
+            // 1. Mostrar estado de carga para flotas grandes
+            if (inputSearch) inputSearch.placeholder = "Cargando flota, por favor espera...";
+
             api.call("Get", { typeName: "Device" }, function (devices) {
+                
+                // 2. Ordenar alfabéticamente para que el datalist filtre a la perfección
+                devices.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+
                 devices.forEach(d => {
                     if (d.name) {
                         let option = document.createElement('option');
@@ -179,16 +185,34 @@ geotab.addin.reeferMonitor = function (api, state) {
                         deviceMap[d.name] = d.id;
                     }
                 });
+
+                // 3. Restaurar placeholder cuando ya tengamos los datos
+                if (inputSearch) inputSearch.placeholder = "Escribe o selecciona una unidad...";
+                console.log(`Buscador inicializado con ${devices.length} activos.`);
+            }, function(error) {
+                console.error("Error cargando dispositivos:", error);
+                if (inputSearch) inputSearch.placeholder = "Error al cargar flota.";
             });
 
+            // Disparar búsqueda automática al seleccionar en el desplegable
             inputSearch.addEventListener('input', function() {
                 if (deviceMap[this.value]) {
                     loadReeferData(deviceMap[this.value]);
                 }
             });
 
+            // Blindar el botón "Actualizar" para que lea la caja de texto sí o sí
             btnRefresh.addEventListener('click', () => {
-                if (currentDeviceId) loadReeferData(currentDeviceId);
+                const selectedName = inputSearch.value;
+                const foundId = deviceMap[selectedName];
+                
+                if (foundId) {
+                    loadReeferData(foundId);
+                } else if (currentDeviceId) {
+                    loadReeferData(currentDeviceId);
+                } else {
+                    alert("Por favor, selecciona un vehículo válido de la lista para actualizar.");
+                }
             });
 
             callback();
