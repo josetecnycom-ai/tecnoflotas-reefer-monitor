@@ -13,12 +13,21 @@
             <h2>Estado de la Unidad de Refrigeración</h2>
         </header>
         
-        <div id="content">
-            <button id="btn-fetch-data" class="geotabButton">Actualizar Datos</button>
+        <div id="content" style="padding: 15px;">
+            
+            <div style="margin-bottom: 15px;">
+                <label for="deviceSearch" style="display:block; font-weight:bold; font-size: 16px; margin-bottom:5px;">
+                    Buscar vehículo/remolque:
+                </label>
+                <input type="text" id="deviceSearch" list="devicesList" class="geotabField" placeholder="Escribe o selecciona una unidad..." style="width: 100%; max-width: 400px; padding: 8px; font-size: 14px; border: 1px solid #cbd5e1; border-radius: 4px;">
+                <datalist id="devicesList"></datalist>
+            </div>
+
+            <button id="btn-fetch-data" class="geotabButton" style="margin-bottom: 20px;">Actualizar Datos</button>
             
             <div id="results-panel"></div>
 
-            <div class="chart-container" style="margin-top: 25px; position: relative; height:320px;">
+            <div class="chart-container" style="margin-top: 30px; position: relative; height:320px;">
                 <canvas id="reeferChart"></canvas>
             </div>
         </div>
