@@ -1,4 +1,4 @@
-geotab.addin.reeferMonitor = function (outerApi, state) {
+geotab.addin.reeferMonitor = function (outerApi, outerState) {
 
     const DIAG_CONFIG = {
         "RefrigerationUnitSetTemperatureZone1Id":       { label: "Set Point Zona 1",   type: "temp",   force: true  },
@@ -19,11 +19,13 @@ geotab.addin.reeferMonitor = function (outerApi, state) {
     const PLACEHOLDER_IDS = new Set(['b2', 'b1', '0', '']);
 
     // ─── Estado interno ────────────────────────────────────────────────────────
-    let currentApi        = outerApi; // Referencia global al API válido más reciente
+    // ¡CLAVE! Usaremos el api de initialize SIEMPRE, igual que el addin de Tacógrafo.
+    // Geotab Drive a veces pasa un objeto api "roto" a focus() que lanza 400 NetworkError.
+    let currentApi        = outerApi; 
+    
     let refreshInterval   = null;
     let loadRetryTimeout  = null;
     let loadRetryCount    = 0;
-    // MAX_RETRIES a 5 (da más margen si la conexión en el navegador es inestable)
     const MAX_RETRIES     = 5; 
     let chartInstance     = null;
     let deviceMap         = {};
@@ -82,13 +84,13 @@ geotab.addin.reeferMonitor = function (outerApi, state) {
             inputSearch.disabled = true;
         }
 
-        console.error('[reeferMonitor] Sesión permanentemente inválida. Probable causa: otro dispositivo tiene la sesión activa.');
+        console.error('[reeferMonitor] Sesión permanentemente inválida.');
 
         showError(
             'Sesión no disponible',
-            'No se puede conectar con el servidor de Geotab.<br><br>' +
+            'No se puede conectar con el servidor de Geotab tras varios intentos.<br><br>' +
             '<strong>Causa más probable:</strong><br>' +
-            'Otro dispositivo (móvil u ordenador) tiene la sesión activa con este mismo usuario, o la sesión ha caducado.<br><br>' +
+            'Otro dispositivo tiene la sesión activa con este mismo usuario, o hay un problema de red persistente.<br><br>' +
             '<strong>Solución:</strong><br>' +
             '1. Cierra sesión en otros dispositivos.<br>' +
             '2. Pulsa <strong>"Recargar"</strong> para reconectar.',
@@ -108,8 +110,8 @@ geotab.addin.reeferMonitor = function (outerApi, state) {
                 : 'Conectando... (intento ' + loadRetryCount + '/' + MAX_RETRIES + ')';
         }
 
-        // Se usa currentApi siempre (que se actualiza en focus)
-        currentApi.call('Get', { typeName: 'Device' }, function(devices) {
+        // Llamada a la API usando el objeto currentApi (el de initialize)
+        currentApi.call('Get', { typeName: 'Device', search: {} }, function(devices) {
             cancelPendingRetries();
             permanentError = false;
             if (inputSearch) inputSearch.disabled = false;
@@ -123,7 +125,6 @@ geotab.addin.reeferMonitor = function (outerApi, state) {
                     var option = document.createElement('option');
                     option.value = d.name;
                     if (dataList) dataList.appendChild(option);
-                    // Guardar en UPPERCASE y sin espacios al inicio/fin para búsquedas robustas
                     deviceMap[d.name.trim().toUpperCase()] = d.id;
                 }
             });
@@ -179,7 +180,6 @@ geotab.addin.reeferMonitor = function (outerApi, state) {
             search: { deviceSearch: { id: deviceId }, fromDate: fromDate }
         }]);
 
-        // Asegurarse de usar currentApi, NO el outerApi que podría estar caducado
         currentApi.multiCall(calls, function(results) {
             var faultsData    = results.pop();
             var telemetryData = results;
@@ -314,7 +314,9 @@ geotab.addin.reeferMonitor = function (outerApi, state) {
     return {
 
         initialize: function (api, state, callback) {
-            currentApi = api; // Guardar referencia inicial
+            // Guardamos el objeto api originario y nunca más lo sobrescribimos.
+            currentApi = api; 
+            
             if (!listenersAttached) {
                 listenersAttached = true;
 
@@ -340,7 +342,6 @@ geotab.addin.reeferMonitor = function (outerApi, state) {
                         } else if (currentDeviceId) {
                             loadReeferData(currentDeviceId);
                         } else {
-                            // En móvil alert() suele estar suprimido, usamos showError
                             showError(
                                 'Vehículo no encontrado',
                                 'Por favor, selecciona un vehículo válido de la lista o comprueba que el nombre coincida exactamente.'
@@ -353,7 +354,10 @@ geotab.addin.reeferMonitor = function (outerApi, state) {
         },
 
         focus: function (api, state) {
-            currentApi = api; // ¡CRÍTICO! Actualizar con la sesión fresca de cada entrada
+            // ¡IMPORTANTE! NO ACTUALIZAMOS `currentApi = api` AQUÍ.
+            // Geotab Drive a menudo inyecta un objeto `api` con sesión caducada 
+            // en la llamada a focus(), lo que provocaba los errores 400.
+            // Hacemos lo mismo que el addin de Tacógrafo: usar siempre el de initialize.
 
             if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
 
@@ -361,12 +365,13 @@ geotab.addin.reeferMonitor = function (outerApi, state) {
                 state && state.device ? JSON.stringify(state.device) : '(sin dispositivo)');
 
             if (permanentError) {
-                console.warn('[reeferMonitor] focus() ignorado: permanentError activo. El usuario debe recargar la página.');
+                console.warn('[reeferMonitor] focus() ignorado: permanentError activo.');
                 return;
             }
 
             cancelPendingRetries();
 
+            // Sí actualizamos el ID del vehículo por si el conductor lo ha cambiado en Drive
             if (state && state.device) {
                 var devId = typeof state.device === 'string'
                     ? state.device
@@ -382,7 +387,6 @@ geotab.addin.reeferMonitor = function (outerApi, state) {
 
             loadDeviceList(function() {
                 if (currentDeviceId && inputSearch && !inputSearch.value) {
-                    // Restaurar nombre exacto (insensible a mayúsculas guardado, pero funciona)
                     var devName = Object.keys(deviceMap).find(function(k) {
                         return deviceMap[k] === currentDeviceId;
                     });
