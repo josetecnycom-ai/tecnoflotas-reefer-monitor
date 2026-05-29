@@ -49,6 +49,11 @@ geotab.addin.reeferMonitor = function (api, state) {
             
             renderTable(telemetryData, diagKeys, faultsData.length);
             renderChart(telemetryData, diagKeys);
+        }, function(error) {
+            console.error("Error cargando telemetría:", error);
+            panel.innerHTML = `<div style="padding: 15px; background: #fee2e2; color: #b91c1c; border-radius: 4px; border: 1px solid #f87171;">
+                <strong>Error de conexión:</strong> No se han podido descargar los datos del vehículo. Tu sesión podría haber caducado.
+            </div>`;
         });
     }
 
@@ -169,12 +174,9 @@ geotab.addin.reeferMonitor = function (api, state) {
     return {
         initialize: function (api, state, callback) {
             
-            // 1. Mostrar estado de carga para flotas grandes
             if (inputSearch) inputSearch.placeholder = "Cargando flota, por favor espera...";
 
             api.call("Get", { typeName: "Device" }, function (devices) {
-                
-                // 2. Ordenar alfabéticamente para que el datalist filtre a la perfección
                 devices.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 
                 devices.forEach(d => {
@@ -186,22 +188,36 @@ geotab.addin.reeferMonitor = function (api, state) {
                     }
                 });
 
-                // 3. Restaurar placeholder cuando ya tengamos los datos
                 if (inputSearch) inputSearch.placeholder = "Escribe o selecciona una unidad...";
                 console.log(`Buscador inicializado con ${devices.length} activos.`);
             }, function(error) {
-                console.error("Error cargando dispositivos:", error);
-                if (inputSearch) inputSearch.placeholder = "Error al cargar flota.";
+                // MANEJO DEL ERROR 400 DE SESIÓN
+                console.error("Error crítico cargando dispositivos:", error);
+                
+                if (inputSearch) {
+                    inputSearch.placeholder = "⚠️ Error de sesión detectado.";
+                    inputSearch.disabled = true; // Bloqueamos el buscador
+                }
+                
+                if (panel) {
+                    panel.innerHTML = `
+                    <div style="padding: 15px; background: #fee2e2; color: #b91c1c; border-radius: 4px; border: 1px solid #f87171; margin-top: 15px;">
+                        <strong style="font-size: 16px;">Error de Sesión Invalida</strong><br><br>
+                        Se ha detectado un cruce de sesiones, probablemente por haber iniciado sesión en otro dispositivo móvil con este mismo usuario.<br><br>
+                        <strong>Solución recomendada:</strong><br>
+                        1. Cierra la sesión en Geotab.<br>
+                        2. Limpia la caché y los datos de la aplicación en tu móvil.<br>
+                        3. Vuelve a iniciar sesión.
+                    </div>`;
+                }
             });
 
-            // Disparar búsqueda automática al seleccionar en el desplegable
             inputSearch.addEventListener('input', function() {
                 if (deviceMap[this.value]) {
                     loadReeferData(deviceMap[this.value]);
                 }
             });
 
-            // Blindar el botón "Actualizar" para que lea la caja de texto sí o sí
             btnRefresh.addEventListener('click', () => {
                 const selectedName = inputSearch.value;
                 const foundId = deviceMap[selectedName];
@@ -218,10 +234,23 @@ geotab.addin.reeferMonitor = function (api, state) {
             callback();
         },
         focus: function (api, state) {
-            if (currentDeviceId) loadReeferData(currentDeviceId);
-            refreshInterval = setInterval(() => {
-                if (currentDeviceId) loadReeferData(currentDeviceId);
-            }, 60000);
+            // PROTECCIÓN EXTRA: Si entras desde Geotab Drive y el state te pasa el vehículo asignado, lo cargamos
+            if (state && state.device && state.device.id) {
+                currentDeviceId = state.device.id;
+                
+                // Actualizamos visualmente el buscador si ya conocemos el nombre
+                if (inputSearch && !inputSearch.value) {
+                    const devName = Object.keys(deviceMap).find(key => deviceMap[key] === currentDeviceId);
+                    if (devName) inputSearch.value = devName;
+                }
+            }
+
+            if (currentDeviceId) {
+                loadReeferData(currentDeviceId);
+                refreshInterval = setInterval(() => {
+                    if (currentDeviceId) loadReeferData(currentDeviceId);
+                }, 60000);
+            }
         },
         blur: function () {
             if (refreshInterval) clearInterval(refreshInterval);
