@@ -1,5 +1,5 @@
 geotab.addin.reeferMonitor = function (api, state) {
-    // 1. Configuración Maestra de Diagnósticos
+    
     const DIAG_CONFIG = {
         "RefrigerationUnitSetTemperatureZone1Id": { label: "Set Point Zona 1", type: "temp", force: true },
         "RefrigerationUnitSetTemperatureZone2Id": { label: "Set Point Zona 2", type: "temp", force: true },
@@ -15,15 +15,12 @@ geotab.addin.reeferMonitor = function (api, state) {
         "DiagnosticDoor2StatusId": { label: "Puerta 2", type: "door", force: false }
     };
 
-    // Paleta de colores limpios para el gráfico
     const CHART_COLORS = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0891b2'];
-
     let refreshInterval = null;
     let chartInstance = null;
     let deviceMap = {};
     let currentDeviceId = null;
 
-    // Referencias DOM
     const inputSearch = document.getElementById('deviceSearch');
     const dataList = document.getElementById('devicesList');
     const btnRefresh = document.getElementById('btn-fetch-data');
@@ -33,25 +30,22 @@ geotab.addin.reeferMonitor = function (api, state) {
         if (!deviceId) return;
         currentDeviceId = deviceId;
         
-        // Rango de 24 horas
         const fromDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         const diagKeys = Object.keys(DIAG_CONFIG);
         
-        // Preparamos las llamadas para todos los diagnósticos
         let calls = diagKeys.map(id => ["Get", {
             typeName: "StatusData",
             search: { deviceSearch: { id: deviceId }, diagnosticSearch: { id: id }, fromDate: fromDate }
         }]);
 
-        // Llamada extra para obtener Fallos/Alertas Activas (aproximación)
         calls.push(["Get", {
             typeName: "FaultData",
             search: { deviceSearch: { id: deviceId }, fromDate: fromDate }
         }]);
 
         api.multiCall(calls, function(results) {
-            const faultsData = results.pop(); // Sacamos el último resultado (Alertas)
-            const telemetryData = results;    // El resto es telemetría
+            const faultsData = results.pop();
+            const telemetryData = results;
             
             renderTable(telemetryData, diagKeys, faultsData.length);
             renderChart(telemetryData, diagKeys);
@@ -59,8 +53,8 @@ geotab.addin.reeferMonitor = function (api, state) {
     }
 
     function renderTable(telemetryData, diagKeys, totalAlerts) {
-        let html = '<table style="width:100%; border-collapse: collapse; margin-top: 15px;">';
-        html += '<tr style="background:#f3f4f6; border-bottom: 2px solid #cbd5e1;"><th style="text-align:left; padding:10px;">Medición</th><th style="text-align:right; padding:10px;">Valor Actual</th></tr>';
+        let html = '<table style="width:100%; border-collapse: collapse; margin-top: 15px; font-family: sans-serif;">';
+        html += '<tr style="background:#f3f4f6; border-bottom: 2px solid #cbd5e1;"><th style="text-align:left; padding:12px;">Medición</th><th style="text-align:right; padding:12px;">Valor / Validez</th></tr>';
         
         telemetryData.forEach((data, index) => {
             const key = diagKeys[index];
@@ -69,21 +63,42 @@ geotab.addin.reeferMonitor = function (api, state) {
             
             if (cfg.force || hasData) {
                 let displayValue = "---";
+                let timeWarningHtml = "";
+
                 if (hasData) {
-                    const rawVal = data[data.length - 1].data;
+                    const lastRecord = data[data.length - 1];
+                    const rawVal = lastRecord.data;
                     displayValue = cfg.type === 'temp' ? `${rawVal.toFixed(1)} ºC` : rawVal;
+
+                    // Cálculo de obsolescencia del dato
+                    const recordTime = new Date(lastRecord.dateTime);
+                    const diffMinutes = Math.floor((Date.now() - recordTime) / 60000);
+
+                    if (diffMinutes <= 15) {
+                        timeWarningHtml = `<span style="display:block; font-size:11px; color:#16a34a;">✔ Tiempo real</span>`;
+                    } else if (diffMinutes < 60) {
+                        timeWarningHtml = `<span style="display:block; font-size:11px; color:#d97706; font-weight:bold;">⚠ Hace ${diffMinutes} min</span>`;
+                    } else {
+                        const diffHours = Math.floor(diffMinutes / 60);
+                        const formattedTime = recordTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                        timeWarningHtml = `<span style="display:block; font-size:11px; color:#dc2626; font-weight:bold;">❌ Desconectado (Hora: ${formattedTime} - Hace ${diffHours}h)</span>`;
+                    }
+                } else if (cfg.force) {
+                    timeWarningHtml = `<span style="display:block; font-size:11px; color:#94a3b8;">Sin registros</span>`;
                 }
+
                 html += `<tr style="border-bottom: 1px solid #e2e8f0;">
-                            <td style="padding: 10px;">${cfg.label}</td>
-                            <td style="padding: 10px; text-align:right; font-weight:bold;">${displayValue}</td>
+                            <td style="padding: 12px; font-weight: 500; color:#1e293b;">${cfg.label}</td>
+                            <td style="padding: 12px; text-align:right; font-weight:bold; color:#0f172a;">
+                                ${displayValue} ${timeWarningHtml}
+                            </td>
                          </tr>`;
             }
         });
 
-        // Fila obligatoria de Total Alertas Activas
         html += `<tr style="border-bottom: 1px solid #e2e8f0; background: #fff1f2;">
-                    <td style="padding: 10px; color: #be123c;">Total Alertas Activas (24h)</td>
-                    <td style="padding: 10px; text-align:right; font-weight:bold; color: #be123c;">${totalAlerts}</td>
+                    <td style="padding: 12px; color: #be123c; font-weight: bold;">Total Alertas Activas (24h)</td>
+                    <td style="padding: 12px; text-align:right; font-weight:bold; color: #be123c;">${totalAlerts}</td>
                  </tr>`;
         
         html += '</table>';
@@ -95,21 +110,24 @@ geotab.addin.reeferMonitor = function (api, state) {
         const datasets = [];
         let colorIndex = 0;
 
+        // Forzamos que los límites del eje X sean de forma estricta las últimas 24 horas exactas
+        const now = new Date();
+        const limitsFrom = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
         telemetryData.forEach((data, index) => {
             const key = diagKeys[index];
             const cfg = DIAG_CONFIG[key];
             
-            // Solo graficar si hay datos y si es un sensor de temperatura (ignorar puertas y estados booleanos)
             if (data && data.length > 0 && cfg.type === 'temp') {
                 datasets.push({
                     label: cfg.label,
                     data: data.map(d => ({ x: new Date(d.dateTime), y: d.data })),
                     borderColor: CHART_COLORS[colorIndex % CHART_COLORS.length],
                     backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    pointRadius: 0, // Estilo limpio sin puntos enormes
-                    pointHoverRadius: 4,
-                    tension: 0.2 // Suavizado de curva
+                    borderWidth: 2.5,
+                    pointRadius: 1,
+                    pointHoverRadius: 5,
+                    tension: 0.1
                 });
                 colorIndex++;
             }
@@ -123,22 +141,28 @@ geotab.addin.reeferMonitor = function (api, state) {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                interaction: {
-                    mode: 'index',
-                    intersect: false,
-                },
+                interaction: { mode: 'index', intersect: false },
                 scales: {
                     x: {
                         type: 'time',
-                        time: { unit: 'hour', tooltipFormat: 'dd/MM/yyyy HH:mm' },
-                        title: { display: true, text: 'Últimas 24 Horas' }
+                        min: limitsFrom,
+                        max: now,
+                        time: {
+                            unit: 'hour',
+                            stepSize: 2,
+                            displayFormats: { hour: 'HH:mm' },
+                            tooltipFormat: 'dd/MM HH:mm'
+                        },
+                        grid: { color: '#f1f5f9' },
+                        title: { display: true, text: 'Línea de tiempo (Últimas 24 Horas)', color: '#64748b' }
                     },
                     y: {
-                        title: { display: true, text: 'Temperatura (ºC)' }
+                        grid: { color: '#e2e8f0' },
+                        title: { display: true, text: 'Temperatura (ºC)', color: '#64748b' }
                     }
                 },
                 plugins: {
-                    legend: { position: 'bottom' }
+                    legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } }
                 }
             }
         });
@@ -146,7 +170,6 @@ geotab.addin.reeferMonitor = function (api, state) {
 
     return {
         initialize: function (api, state, callback) {
-            // Cargar vehículos para el buscador
             api.call("Get", { typeName: "Device" }, function (devices) {
                 devices.forEach(d => {
                     if (d.name) {
@@ -158,14 +181,12 @@ geotab.addin.reeferMonitor = function (api, state) {
                 });
             });
 
-            // Evento: Al seleccionar un vehículo en el datalist
             inputSearch.addEventListener('input', function() {
                 if (deviceMap[this.value]) {
                     loadReeferData(deviceMap[this.value]);
                 }
             });
 
-            // Evento: Botón manual
             btnRefresh.addEventListener('click', () => {
                 if (currentDeviceId) loadReeferData(currentDeviceId);
             });
@@ -173,14 +194,12 @@ geotab.addin.reeferMonitor = function (api, state) {
             callback();
         },
         focus: function (api, state) {
-            // Activar Auto-Update cada 60 segundos al abrir
             if (currentDeviceId) loadReeferData(currentDeviceId);
             refreshInterval = setInterval(() => {
                 if (currentDeviceId) loadReeferData(currentDeviceId);
             }, 60000);
         },
         blur: function () {
-            // Detener Auto-Update al cerrar la pestaña o cambiar de menú
             if (refreshInterval) clearInterval(refreshInterval);
         }
     };
