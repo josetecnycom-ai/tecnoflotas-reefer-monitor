@@ -1,92 +1,73 @@
 geotab.addin.reeferMonitor = function (api, state) {
-    const DIAGNOSTICS_MAP = {
-        "ThermographTemperature2Id": "Temperatura Termógrafo 2",
-        "DiagnosticCargoTemperatureZone2Id": "Temp. Carga Zona 2",
-        "a6WvyJrvcnUyjhidqtNqaTw": "Sonda Temp 1",
-        "aZ_PCPTFQJUWGgwTodd5nhA": "Sonda Temp 2"
+    // Lista de diagnósticos maestra
+    const DIAG_CONFIG = {
+        "DiagnosticCargoTemperatureZone1Id": { label: "Temp. Carga Zona 1", type: "temp" },
+        "DiagnosticCargoTemperatureZone2Id": { label: "Temp. Carga Zona 2", type: "temp" },
+        "RefrigerationUnitSetTemperatureZone1Id": { label: "Set Point Zona 1", type: "temp", force: true },
+        "RefrigerationUnitSetTemperatureZone2Id": { label: "Set Point Zona 2", type: "temp", force: true },
+        "RefrigerationUnitStatusId": { label: "Estado Unidad", type: "status", force: true },
+        // ... añadir aquí el resto de diagnósticos de tu lista
     };
 
-    let elResultsPanel = document.getElementById('results-panel');
-    let inputSearch = document.getElementById('deviceSearch');
-    let dataList = document.getElementById('devicesList');
-    let chartInstance = null;
-    let deviceMap = {};
+    let refreshInterval = null;
+    let chart = null;
 
-    function updateChart(dataPoints) {
-        const ctx = document.getElementById('reeferChart').getContext('2d');
-        if (chartInstance) chartInstance.destroy();
+    function fetchData(deviceId) {
+        const fromDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        
+        // Llamada masiva dinámica
+        const calls = Object.keys(DIAG_CONFIG).map(id => ["Get", {
+            typeName: "StatusData",
+            search: { deviceSearch: { id: deviceId }, diagnosticSearch: { id: id }, fromDate: fromDate }
+        }]);
 
-        chartInstance = new Chart(ctx, {
-            type: 'line',
-            data: {
-                datasets: [{
-                    label: 'Sonda Temp 1 (ºC)',
-                    data: dataPoints,
-                    borderColor: 'rgb(75, 192, 192)',
-                    tension: 0.1
-                }]
-            },
-            options: {
-                responsive: true,
-                scales: { x: { type: 'time', time: { unit: 'minute' } } }
-            }
+        api.multiCall(calls, (results) => {
+            renderTable(results);
+            renderChart(results);
         });
     }
 
     function renderTable(results) {
-        let html = '<h3>Valores Actuales</h3><table border="1" style="width:100%; border-collapse: collapse;">';
+        let html = '<table class="data-table"><thead><tr><th>Medición</th><th>Valor</th></tr></thead><tbody>';
+        
         results.forEach((data, index) => {
-            const diagId = Object.keys(DIAGNOSTICS_MAP)[index];
-            const name = DIAGNOSTICS_MAP[diagId];
-            // Tomamos el último valor registrado si existe
-            const value = (data && data.length > 0) ? data[data.length - 1].data.toFixed(2) + " ºC" : "Sin datos";
-            html += `<tr><td style="padding: 8px;">${name}</td><td style="padding: 8px;">${value}</td></tr>`;
+            const diagId = Object.keys(DIAG_CONFIG)[index];
+            const cfg = DIAG_CONFIG[diagId];
+            const lastVal = data.length ? data[data.length - 1].data : null;
+
+            // Lógica: Mostrar siempre si es 'force', o si tiene datos reales
+            if (cfg.force || lastVal !== null) {
+                html += `<tr><td>${cfg.label}</td><td>${lastVal ?? "---"}</td></tr>`;
+            }
         });
-        html += '</table>';
-        elResultsPanel.innerHTML = html;
+        html += '</tbody></table>';
+        document.getElementById('results-panel').innerHTML = html;
     }
 
-    function loadReeferData(deviceId) {
-        const fromDate = new Date(new Date().getTime() - (2 * 60 * 60 * 1000)).toISOString();
-        
-        // Creamos las llamadas para todos los sensores
-        const calls = Object.keys(DIAGNOSTICS_MAP).map(diagId => [
-            "Get", {
-                typeName: "StatusData",
-                search: {
-                    deviceSearch: { id: deviceId },
-                    diagnosticSearch: { id: diagId },
-                    fromDate: fromDate
-                }
+    // Configuración del gráfico con estilo limpio
+    function renderChart(results) {
+        const ctx = document.getElementById('reeferChart').getContext('2d');
+        if (chart) chart.destroy();
+
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: { datasets: formatDatasets(results) },
+            options: {
+                responsive: true,
+                interaction: { intersect: false },
+                scales: { x: { type: 'time', time: { unit: 'hour' } } }
             }
-        ]);
-
-        api.multiCall(calls, function(results) {
-            // 1. Actualizar la tabla con todos los resultados
-            renderTable(results);
-
-            // 2. Actualizar el gráfico (usamos el índice 2, que corresponde a 'a6WvyJrvcnUyjhidqtNqaTw')
-            const chartData = results[2].map(r => ({ x: r.dateTime, y: r.data }));
-            updateChart(chartData);
         });
     }
 
     return {
-        initialize: function (api, state, callback) {
-            api.call("Get", { typeName: "Device" }, function (devices) {
-                devices.forEach(d => {
-                    if (d.name) {
-                        let option = document.createElement('option');
-                        option.value = d.name;
-                        dataList.appendChild(option);
-                        deviceMap[d.name] = d.id;
-                    }
-                });
-                inputSearch.onchange = function() {
-                    if (deviceMap[this.value]) loadReeferData(deviceMap[this.value]);
-                };
-            });
-            callback();
+        focus: function (api, state) {
+            // Iniciar actualización cada 60 segundos
+            refreshInterval = setInterval(() => fetchData(state.device.id), 60000);
+            fetchData(state.device.id);
+        },
+        blur: function () {
+            clearInterval(refreshInterval); // Detener al cerrar
         }
     };
 };
