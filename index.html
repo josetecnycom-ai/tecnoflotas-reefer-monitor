@@ -14,11 +14,11 @@
         </header>
         
         <div id="content" style="padding: 10px;">
-            <div id="search-container" style="margin-bottom: 15px;">
-                <label for="deviceSearch">Buscar vehículo/remolque:</label><br>
-                <input list="devicesList" id="deviceSearch" placeholder="Escribe para buscar..." style="width: 300px; padding: 5px;">
-                <datalist id="devicesList"></datalist>
-            </div>
+            <div class="search-container">
+    <label for="deviceSearch">Buscar vehículo/remolque:</label>
+    <input type="text" id="deviceSearch" list="devicesList" placeholder="Ej: C54...">
+    <datalist id="devicesList"></datalist>
+</div>
 
             <button id="btn-fetch-data" class="geotabButton">Actualizar Datos</button>
             
