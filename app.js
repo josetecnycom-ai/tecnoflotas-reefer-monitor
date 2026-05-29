@@ -19,19 +19,16 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
     const PLACEHOLDER_IDS = new Set(['b2', 'b1', '0', '']);
 
     // ─── Estado interno ────────────────────────────────────────────────────────
-    // ¡CLAVE! Usaremos el api de initialize SIEMPRE, igual que el addin de Tacógrafo.
-    // Geotab Drive a veces pasa un objeto api "roto" a focus() que lanza 400 NetworkError.
     let currentApi        = outerApi; 
-    
     let refreshInterval   = null;
     let loadRetryTimeout  = null;
     let loadRetryCount    = 0;
-    const MAX_RETRIES     = 5; 
+    const MAX_RETRIES     = 3; // Reducido, si falla usamos fallback
     let chartInstance     = null;
     let deviceMap         = {};
     let currentDeviceId   = null;
     let listenersAttached = false;
-    let permanentError    = false;
+    let fallbackMode      = false; // Si falla la carga de flota, buscamos bajo demanda
 
     // ─── Referencias DOM ───────────────────────────────────────────────────────
     const inputSearch = document.getElementById('deviceSearch');
@@ -74,46 +71,17 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
         loadRetryCount = 0;
     }
 
-    function showPermanentSessionError() {
-        permanentError = true;
-        cancelPendingRetries();
-        if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
+    // ─── Carga de la lista de dispositivos (Autocomplete) ──────────────────────
 
-        if (inputSearch) {
-            inputSearch.placeholder = '⚠️ Sesión no disponible';
-            inputSearch.disabled = true;
+    function loadDeviceList() {
+        if (fallbackMode) return;
+
+        if (inputSearch && loadRetryCount === 0) {
+            inputSearch.placeholder = 'Cargando autocompletado...';
         }
 
-        console.error('[reeferMonitor] Sesión permanentemente inválida.');
-
-        showError(
-            'Sesión no disponible',
-            'No se puede conectar con el servidor de Geotab tras varios intentos.<br><br>' +
-            '<strong>Causa más probable:</strong><br>' +
-            'Otro dispositivo tiene la sesión activa con este mismo usuario, o hay un problema de red persistente.<br><br>' +
-            '<strong>Solución:</strong><br>' +
-            '1. Cierra sesión en otros dispositivos.<br>' +
-            '2. Pulsa <strong>"Recargar"</strong> para reconectar.',
-            '🔄 Recargar página',
-            function() { window.location.reload(); }
-        );
-    }
-
-    // ─── Carga de la lista de dispositivos ─────────────────────────────────────
-
-    function loadDeviceList(onSuccess) {
-        if (permanentError) return;
-
-        if (inputSearch) {
-            inputSearch.placeholder = loadRetryCount === 0
-                ? 'Cargando flota...'
-                : 'Conectando... (intento ' + loadRetryCount + '/' + MAX_RETRIES + ')';
-        }
-
-        // Llamada a la API usando el objeto currentApi (el de initialize)
-        currentApi.call('Get', { typeName: 'Device', search: {} }, function(devices) {
+        currentApi.call('Get', { typeName: 'Device', resultsLimit: 5000 }, function(devices) {
             cancelPendingRetries();
-            permanentError = false;
             if (inputSearch) inputSearch.disabled = false;
 
             devices.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
@@ -129,38 +97,75 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
                 }
             });
 
-            if (inputSearch) inputSearch.placeholder = 'Escribe o selecciona una unidad...';
+            if (inputSearch) {
+                inputSearch.placeholder = 'Escribe o selecciona una unidad...';
+                // Si ya teníamos el vehículo asignado, mostrar el nombre
+                if (currentDeviceId && !inputSearch.value) {
+                    var devName = Object.keys(deviceMap).find(function(k) { return deviceMap[k] === currentDeviceId; });
+                    if (devName) inputSearch.value = devName;
+                }
+            }
             console.log('[reeferMonitor] Flota cargada: ' + devices.length + ' activos.');
 
-            if (typeof onSuccess === 'function') onSuccess();
-
         }, function(error) {
-            console.error('[reeferMonitor] Error cargando dispositivos (intento ' +
-                          loadRetryCount + '):', error && error.code, error && error.data && error.data.type);
+            console.warn('[reeferMonitor] Aviso: Error cargando lista de dispositivos para autocompletar.', error);
 
             if (isNetworkError(error) || (error && error.code === 400)) {
                 if (loadRetryCount < MAX_RETRIES) {
-                    var delay = Math.min(3000 * Math.pow(2, loadRetryCount), 15000); 
                     loadRetryCount++;
-                    console.warn('[reeferMonitor] Reintento ' + loadRetryCount + '/' + MAX_RETRIES +
-                                 ' en ' + (delay / 1000) + 's...');
-                    loadRetryTimeout = setTimeout(function() {
-                        loadDeviceList(onSuccess);
-                    }, delay);
+                    var delay = 3000 * loadRetryCount; 
+                    loadRetryTimeout = setTimeout(loadDeviceList, delay);
                 } else {
-                    showPermanentSessionError();
+                    // Fallback: Activar buscador manual si falla la carga masiva
+                    enableFallbackMode();
                 }
             } else {
-                showPermanentSessionError();
+                enableFallbackMode();
             }
+        });
+    }
+
+    function enableFallbackMode() {
+        console.warn('[reeferMonitor] Fallback activado. Buscando vehículos de forma individual bajo demanda.');
+        fallbackMode = true;
+        cancelPendingRetries();
+        if (inputSearch) {
+            inputSearch.placeholder = 'Escribe el nombre exacto de la unidad...';
+            inputSearch.disabled = false;
+        }
+    }
+
+    // ─── Carga dinámica de un solo vehículo (Fallback) ─────────────────────────
+    
+    function fetchAndLoadSingleDevice(nameStr) {
+        showInfo('Buscando vehículo "' + nameStr + '"...');
+        currentApi.call('Get', {
+            typeName: 'Device',
+            search: { name: "%" + nameStr + "%" }
+        }, function(devices) {
+            if (devices && devices.length > 0) {
+                // Seleccionar coincidencia exacta o el primero
+                var match = devices.find(function(d) { return d.name && d.name.toUpperCase() === nameStr; }) || devices[0];
+                deviceMap[match.name.trim().toUpperCase()] = match.id;
+                if (inputSearch) inputSearch.value = match.name; // Autocorregir nombre
+                loadReeferData(match.id);
+            } else {
+                showError('Vehículo no encontrado', 'No existe ningún vehículo con el nombre "' + nameStr + '".');
+            }
+        }, function(error) {
+            console.error('[reeferMonitor] Error buscando vehículo individual:', error);
+            showError('Error de red', 'No se pudo buscar el vehículo. Por favor, reintenta.');
         });
     }
 
     // ─── Carga de datos de telemetría ──────────────────────────────────────────
 
     function loadReeferData(deviceId) {
-        if (!deviceId || permanentError || PLACEHOLDER_IDS.has(deviceId)) return;
+        if (!deviceId || PLACEHOLDER_IDS.has(deviceId)) return;
         currentDeviceId = deviceId;
+
+        // Mostrar "Cargando..." mientras se recuperan los datos
+        showInfo('Obteniendo telemetría del vehículo...');
 
         var fromDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         var diagKeys = Object.keys(DIAG_CONFIG);
@@ -188,11 +193,10 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
         }, function(error) {
             console.error('[reeferMonitor] Error telemetría:', error && error.code, error);
             window.__reeferAction = function() {
-                showInfo('Reintentando...');
                 loadReeferData(currentDeviceId);
             };
             showError('Error al cargar datos',
-                'No se pudieron obtener los datos del vehículo.',
+                'No se pudieron obtener los datos del vehículo. Puede ser un error de conexión.',
                 '🔄 Reintentar', window.__reeferAction);
         });
     }
@@ -314,8 +318,7 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
     return {
 
         initialize: function (api, state, callback) {
-            // Guardamos el objeto api originario y nunca más lo sobrescribimos.
-            currentApi = api; 
+            currentApi = api; // Guardar api originario y nunca sobreescribir.
             
             if (!listenersAttached) {
                 listenersAttached = true;
@@ -330,21 +333,21 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
 
                 if (btnRefresh) {
                     btnRefresh.addEventListener('click', function() {
-                        if (permanentError) {
-                            window.location.reload();
-                            return;
-                        }
-                        var name    = inputSearch ? inputSearch.value.trim().toUpperCase() : '';
-                        var foundId = deviceMap[name];
+                        var name = inputSearch ? inputSearch.value.trim().toUpperCase() : '';
                         
-                        if (foundId) {
-                            loadReeferData(foundId);
+                        if (deviceMap[name]) {
+                            // Tenemos el ID en el mapa (autocompletado o ya buscado)
+                            loadReeferData(deviceMap[name]);
+                        } else if (name !== '') {
+                            // No tenemos la flota completa, buscar este vehículo específicamente
+                            fetchAndLoadSingleDevice(name);
                         } else if (currentDeviceId) {
+                            // Recargar el actual
                             loadReeferData(currentDeviceId);
                         } else {
                             showError(
-                                'Vehículo no encontrado',
-                                'Por favor, selecciona un vehículo válido de la lista o comprueba que el nombre coincida exactamente.'
+                                'Vehículo no seleccionado',
+                                'Por favor, escribe el nombre de un vehículo para buscarlo.'
                             );
                         }
                     });
@@ -354,24 +357,10 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
         },
 
         focus: function (api, state) {
-            // ¡IMPORTANTE! NO ACTUALIZAMOS `currentApi = api` AQUÍ.
-            // Geotab Drive a menudo inyecta un objeto `api` con sesión caducada 
-            // en la llamada a focus(), lo que provocaba los errores 400.
-            // Hacemos lo mismo que el addin de Tacógrafo: usar siempre el de initialize.
-
+            // NO actualizamos currentApi aquí.
             if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
 
-            console.log('[reeferMonitor] focus() state.device:',
-                state && state.device ? JSON.stringify(state.device) : '(sin dispositivo)');
-
-            if (permanentError) {
-                console.warn('[reeferMonitor] focus() ignorado: permanentError activo.');
-                return;
-            }
-
-            cancelPendingRetries();
-
-            // Sí actualizamos el ID del vehículo por si el conductor lo ha cambiado en Drive
+            // Refrescar el ID asignado por Geotab Drive al conductor
             if (state && state.device) {
                 var devId = typeof state.device === 'string'
                     ? state.device
@@ -379,27 +368,22 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
 
                 if (devId && !PLACEHOLDER_IDS.has(devId)) {
                     currentDeviceId = devId;
-                    console.log('[reeferMonitor] Vehículo asignado por Drive:', devId);
-                } else {
-                    console.log('[reeferMonitor] state.device.id es un placeholder ("' + devId + '"), ignorado.');
                 }
             }
 
-            loadDeviceList(function() {
-                if (currentDeviceId && inputSearch && !inputSearch.value) {
-                    var devName = Object.keys(deviceMap).find(function(k) {
-                        return deviceMap[k] === currentDeviceId;
-                    });
-                    if (devName) inputSearch.value = devName;
-                }
+            // CRÍTICO: Desacoplar la carga de datos del vehículo de la lista completa.
+            // Si currentDeviceId existe, cargamos los datos INMEDIATAMENTE.
+            // No bloqueamos la ejecución esperando a loadDeviceList().
+            if (currentDeviceId) {
+                loadReeferData(currentDeviceId);
+                refreshInterval = setInterval(function() {
+                    if (currentDeviceId) loadReeferData(currentDeviceId);
+                }, 60000);
+            }
 
-                if (currentDeviceId && !PLACEHOLDER_IDS.has(currentDeviceId)) {
-                    loadReeferData(currentDeviceId);
-                    refreshInterval = setInterval(function() {
-                        if (!permanentError && currentDeviceId) loadReeferData(currentDeviceId);
-                    }, 60000);
-                }
-            });
+            // En paralelo (y de forma no bloqueante), intentamos cargar la lista
+            // de vehículos para el autocompletado. Si esto falla, no afecta a loadReeferData.
+            loadDeviceList();
         },
 
         blur: function () {
