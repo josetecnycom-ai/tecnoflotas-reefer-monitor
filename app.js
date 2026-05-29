@@ -27,6 +27,30 @@ geotab.addin.reeferMonitor = function (api, state) {
     const btnRefresh = document.getElementById('btn-fetch-data');
     const panel = document.getElementById('results-panel');
 
+    function showError(title, message, canRetry) {
+        if (panel) {
+            const retryBtn = canRetry
+                ? `<br><br><button onclick="window.__reeferRetry && window.__reeferRetry()" style="margin-top:10px; padding:8px 20px; background:#2563eb; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:14px;">🔄 Reintentar</button>`
+                : '';
+            panel.innerHTML = `
+            <div style="padding: 15px; background: #fee2e2; color: #b91c1c; border-radius: 4px; border: 1px solid #f87171; margin-top: 15px;">
+                <strong style="font-size: 16px;">${title}</strong><br><br>
+                ${message}
+                ${retryBtn}
+            </div>`;
+        }
+    }
+
+    function resetErrorState() {
+        sessionError = false;
+        if (inputSearch) {
+            inputSearch.disabled = false;
+            if (inputSearch.placeholder.includes('Error')) {
+                inputSearch.placeholder = "Escribe o selecciona una unidad...";
+            }
+        }
+    }
+
     function handleSessionError(error) {
         // Detener el intervalo de refresco inmediatamente
         if (refreshInterval) {
@@ -40,17 +64,61 @@ geotab.addin.reeferMonitor = function (api, state) {
             inputSearch.placeholder = "⚠️ Error de sesión detectado.";
             inputSearch.disabled = true;
         }
-        if (panel) {
-            panel.innerHTML = `
-            <div style="padding: 15px; background: #fee2e2; color: #b91c1c; border-radius: 4px; border: 1px solid #f87171; margin-top: 15px;">
-                <strong style="font-size: 16px;">Error de Sesión Inválida</strong><br><br>
-                Se ha detectado un cruce de sesiones, probablemente por haber iniciado sesión en otro dispositivo móvil con este mismo usuario.<br><br>
-                <strong>Solución recomendada:</strong><br>
-                1. Cierra la sesión en Geotab.<br>
-                2. Limpia la caché y los datos de la aplicación en tu móvil.<br>
-                3. Vuelve a iniciar sesión.
-            </div>`;
-        }
+
+        // Botón de reintento: resetea el flag y vuelve a intentar
+        window.__reeferRetry = function() {
+            resetErrorState();
+            if (panel) panel.innerHTML = '<p style="padding:15px; color:#64748b;">Reintentando conexión...</p>';
+            api.call("Get", { typeName: "Device" }, function(devices) {
+                devices.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+                deviceMap = {};
+                if (dataList) dataList.innerHTML = '';
+                devices.forEach(d => {
+                    if (d.name) {
+                        let option = document.createElement('option');
+                        option.value = d.name;
+                        if (dataList) dataList.appendChild(option);
+                        deviceMap[d.name] = d.id;
+                    }
+                });
+                if (inputSearch) inputSearch.placeholder = "Escribe o selecciona una unidad...";
+                if (currentDeviceId) loadReeferData(currentDeviceId);
+            }, function(err) {
+                handleSessionError(err);
+            });
+        };
+
+        showError(
+            "Error de Sesión Inválida",
+            `Se ha detectado un problema con la sesión, probablemente por iniciar sesión en otro dispositivo con este mismo usuario.<br><br>
+            <strong>Solución recomendada:</strong><br>
+            1. Cierra la sesión en Geotab.<br>
+            2. Limpia la caché y los datos de la aplicación en tu móvil.<br>
+            3. Vuelve a iniciar sesión.`,
+            true
+        );
+    }
+
+    function handlePermissionError(error) {
+        // Error 400 en datos de telemetría: puede ser falta de permisos del conductor, no un error de sesión
+        console.warn("Error 400 en telemetría (posible falta de permisos):", error);
+
+        // Exponemos el reintento sin bloquear permanentemente la app
+        window.__reeferRetry = function() {
+            if (panel) panel.innerHTML = '<p style="padding:15px; color:#64748b;">Reintentando...</p>';
+            if (currentDeviceId) loadReeferData(currentDeviceId);
+        };
+
+        showError(
+            "Sin acceso a los datos de telemetría",
+            `El servidor ha devuelto un error al consultar los datos del vehículo.<br><br>
+            <strong>Posibles causas:</strong><br>
+            • El rol del conductor no tiene permisos para leer datos de telemetría.<br>
+            • El vehículo no tiene unidad de refrigeración activa.<br>
+            • El servidor de Geotab ha rechazado la consulta.<br><br>
+            Contacta con el administrador si el problema persiste.`,
+            true
+        );
     }
 
     function loadReeferData(deviceId) {
@@ -77,14 +145,19 @@ geotab.addin.reeferMonitor = function (api, state) {
             renderTable(telemetryData, diagKeys, faultsData.length);
             renderChart(telemetryData, diagKeys);
         }, function(error) {
-            console.error("Error cargando telemetría:", error);
-            // Si el código de error es 400 (Bad Request), tratarlo como error de sesión
-            if (error && (error.code === 400 || error.code === "InvalidUserException" || String(error.message).toLowerCase().includes("bad request"))) {
+            console.error("Error cargando telemetría (código:", error && error.code, "):", error);
+            // InvalidUserException o AuthenticationException = error de sesión real
+            if (error && (error.code === "InvalidUserException" || error.code === "AuthenticationException"
+                || String(error.message).toLowerCase().includes("authenticated")
+                || String(error.message).toLowerCase().includes("session"))) {
                 handleSessionError(error);
+            } else if (error && (error.code === 400 || String(error.message).toLowerCase().includes("bad request"))) {
+                // 400 en telemetría = probablemente permisos insuficientes del conductor, NO bloquear la app
+                handlePermissionError(error);
             } else {
-                panel.innerHTML = `<div style="padding: 15px; background: #fee2e2; color: #b91c1c; border-radius: 4px; border: 1px solid #f87171;">
-                    <strong>Error de conexión:</strong> No se han podido descargar los datos del vehículo. Inténtalo de nuevo.
-                </div>`;
+                showError("Error de conexión",
+                    "No se han podido descargar los datos del vehículo. Inténtalo de nuevo.",
+                    true);
             }
         });
     }
@@ -250,21 +323,37 @@ geotab.addin.reeferMonitor = function (api, state) {
             callback();
         },
         focus: function (api, state) {
-            // PROTECCIÓN EXTRA: Si entras desde Geotab Drive y el state te pasa el vehículo asignado, lo cargamos
-            if (state && state.device && state.device.id) {
-                currentDeviceId = state.device.id;
-                
-                // Actualizamos visualmente el buscador si ya conocemos el nombre
-                if (inputSearch && !inputSearch.value) {
-                    const devName = Object.keys(deviceMap).find(key => deviceMap[key] === currentDeviceId);
-                    if (devName) inputSearch.value = devName;
+            // Limpiar cualquier intervalo previo antes de crear uno nuevo (evita duplicados)
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+            }
+
+            // Resetear el flag de error para que el usuario pueda reintentar al volver al add-in
+            resetErrorState();
+
+            // Log de diagnóstico: ver qué estructura tiene state en web vs Drive móvil
+            console.log("[reeferMonitor] focus() state.device:", state && state.device ? JSON.stringify(state.device) : "(sin dispositivo)");
+
+            // Si Geotab Drive pasa el vehículo del conductor en state, lo usamos
+            if (state && state.device) {
+                // state.device puede ser un objeto completo o solo { id: '...' }
+                const devId = typeof state.device === 'string' ? state.device
+                            : (state.device.id || state.device.Id || null);
+                if (devId) {
+                    currentDeviceId = devId;
+                    // Actualizar visualmente el buscador si ya conocemos el nombre
+                    if (inputSearch && !inputSearch.value) {
+                        const devName = Object.keys(deviceMap).find(key => deviceMap[key] === currentDeviceId);
+                        if (devName) inputSearch.value = devName;
+                    }
                 }
             }
 
             if (currentDeviceId) {
                 loadReeferData(currentDeviceId);
                 refreshInterval = setInterval(() => {
-                    if (currentDeviceId) loadReeferData(currentDeviceId);
+                    if (currentDeviceId && !sessionError) loadReeferData(currentDeviceId);
                 }, 60000);
             }
         },
