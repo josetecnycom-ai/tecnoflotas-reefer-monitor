@@ -16,11 +16,17 @@ geotab.addin.reeferMonitor = function (api, state) {
     };
 
     const CHART_COLORS = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0891b2'];
+    // IDs ficticios que Geotab Drive devuelve cuando aún no hay vehículo asignado
+    const PLACEHOLDER_IDS = new Set(['b2', 'b1', '0', '', null, undefined]);
+
     let refreshInterval = null;
+    let initRetryTimeout = null;
+    let initRetryCount = 0;
+    const MAX_INIT_RETRIES = 5;
     let chartInstance = null;
     let deviceMap = {};
     let currentDeviceId = null;
-    let sessionError = false; // Flag para evitar peticiones tras error de sesión
+    let sessionError = false;
 
     const inputSearch = document.getElementById('deviceSearch');
     const dataList = document.getElementById('devicesList');
@@ -45,10 +51,60 @@ geotab.addin.reeferMonitor = function (api, state) {
         sessionError = false;
         if (inputSearch) {
             inputSearch.disabled = false;
-            if (inputSearch.placeholder.includes('Error')) {
+            if (inputSearch.placeholder.includes('Error') || inputSearch.placeholder.includes('espera')) {
                 inputSearch.placeholder = "Escribe o selecciona una unidad...";
             }
         }
+    }
+
+    // Un error 400 con type:NetworkError es transitorio (la sesión de Geotab aún se está estableciendo)
+    function isNetworkError(error) {
+        if (!error) return false;
+        const dataType = error.data && (error.data.type || '');
+        return dataType === 'NetworkError' || dataType === 'network';
+    }
+
+    // Reintenta la carga de la lista de dispositivos con backoff exponencial
+    function scheduleInitRetry(apiRef) {
+        if (initRetryCount >= MAX_INIT_RETRIES) {
+            console.error('[reeferMonitor] Máximo de reintentos alcanzado en initialize.');
+            handleSessionError({ message: 'No se pudo conectar tras varios intentos.' });
+            return;
+        }
+        const delay = Math.min(3000 * Math.pow(2, initRetryCount), 30000); // 3s, 6s, 12s, 24s, 30s
+        initRetryCount++;
+        console.warn(`[reeferMonitor] NetworkError transitorio. Reintento ${initRetryCount}/${MAX_INIT_RETRIES} en ${delay/1000}s...`);
+
+        if (inputSearch) inputSearch.placeholder = `Conectando... (intento ${initRetryCount}/${MAX_INIT_RETRIES})`;
+
+        initRetryTimeout = setTimeout(function() {
+            apiRef.call('Get', { typeName: 'Device' }, function(devices) {
+                initRetryCount = 0; // Éxito: resetear contador
+                devices.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                deviceMap = {};
+                if (dataList) dataList.innerHTML = '';
+                devices.forEach(d => {
+                    if (d.name) {
+                        let option = document.createElement('option');
+                        option.value = d.name;
+                        if (dataList) dataList.appendChild(option);
+                        deviceMap[d.name] = d.id;
+                    }
+                });
+                if (inputSearch) inputSearch.placeholder = 'Escribe o selecciona una unidad...';
+                console.log(`[reeferMonitor] Flota cargada tras reintento: ${devices.length} activos.`);
+                // Si ya había un vehículo seleccionado, cargamos sus datos
+                if (currentDeviceId && !PLACEHOLDER_IDS.has(currentDeviceId)) {
+                    loadReeferData(currentDeviceId);
+                }
+            }, function(err) {
+                if (isNetworkError(err)) {
+                    scheduleInitRetry(apiRef);
+                } else {
+                    handleSessionError(err);
+                }
+            });
+        }, delay);
     }
 
     function handleSessionError(error) {
@@ -296,9 +352,14 @@ geotab.addin.reeferMonitor = function (api, state) {
                 if (inputSearch) inputSearch.placeholder = "Escribe o selecciona una unidad...";
                 console.log(`Buscador inicializado con ${devices.length} activos.`);
             }, function(error) {
-                // MANEJO DEL ERROR 400 DE SESIÓN
-                console.error("Error crítico cargando dispositivos:", error);
-                handleSessionError(error);
+                console.error('[reeferMonitor] Error cargando dispositivos:', error);
+                if (isNetworkError(error)) {
+                    // Error transitorio: Geotab Drive aún está completando la autenticación → reintentar
+                    scheduleInitRetry(api);
+                } else {
+                    // Error real de sesión (credenciales inválidas, token caducado, etc.)
+                    handleSessionError(error);
+                }
             });
 
             inputSearch.addEventListener('input', function() {
@@ -340,13 +401,18 @@ geotab.addin.reeferMonitor = function (api, state) {
                 // state.device puede ser un objeto completo o solo { id: '...' }
                 const devId = typeof state.device === 'string' ? state.device
                             : (state.device.id || state.device.Id || null);
-                if (devId) {
+
+                // 'b2' y similares son IDs ficticios de Geotab Drive (sin vehículo asignado aún)
+                if (devId && !PLACEHOLDER_IDS.has(devId)) {
                     currentDeviceId = devId;
+                    console.log('[reeferMonitor] Vehículo asignado por Drive:', devId);
                     // Actualizar visualmente el buscador si ya conocemos el nombre
                     if (inputSearch && !inputSearch.value) {
                         const devName = Object.keys(deviceMap).find(key => deviceMap[key] === currentDeviceId);
                         if (devName) inputSearch.value = devName;
                     }
+                } else {
+                    console.log('[reeferMonitor] state.device.id es un placeholder (', devId, '), ignorado.');
                 }
             }
 
