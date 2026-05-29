@@ -1,4 +1,4 @@
-geotab.addin.reeferMonitor = function (api, state) {
+geotab.addin.reeferMonitor = function (outerApi, state) {
 
     const DIAG_CONFIG = {
         "RefrigerationUnitSetTemperatureZone1Id":       { label: "Set Point Zona 1",   type: "temp",   force: true  },
@@ -16,28 +16,20 @@ geotab.addin.reeferMonitor = function (api, state) {
     };
 
     const CHART_COLORS = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0891b2'];
-
-    // IDs ficticios de Geotab Drive cuando la sesión aún no está establecida
     const PLACEHOLDER_IDS = new Set(['b2', 'b1', '0', '']);
 
     // ─── Estado interno ────────────────────────────────────────────────────────
+    let currentApi        = outerApi; // Referencia global al API válido más reciente
     let refreshInterval   = null;
     let loadRetryTimeout  = null;
     let loadRetryCount    = 0;
-    // MAX_RETRIES reducido a 3: si después de 21s (3+6+12) el api sigue fallando,
-    // es una invalidación permanente de sesión, no un error transitorio.
-    const MAX_RETRIES     = 3;
+    // MAX_RETRIES a 5 (da más margen si la conexión en el navegador es inestable)
+    const MAX_RETRIES     = 5; 
     let chartInstance     = null;
     let deviceMap         = {};
     let currentDeviceId   = null;
     let listenersAttached = false;
-
-    // permanentError: se activa cuando los reintentos se agotan.
-    // A diferencia de sessionError, NO se resetea en focus() para evitar
-    // el bucle infinito de reintentos que ocurre cuando Geotab Drive llama
-    // a focus() repetidamente mientras la sesión está invalidada por otro dispositivo.
-    // Solo se limpia mediante recarga de página o clic manual en "Reintentar".
-    let permanentError = false;
+    let permanentError    = false;
 
     // ─── Referencias DOM ───────────────────────────────────────────────────────
     const inputSearch = document.getElementById('deviceSearch');
@@ -69,30 +61,20 @@ geotab.addin.reeferMonitor = function (api, state) {
         }
     }
 
-    // ─── Detección de tipo de error ────────────────────────────────────────────
-
     function isNetworkError(error) {
         if (!error) return false;
         var t = (error.data && error.data.type) || '';
         return t === 'NetworkError' || t === 'network';
     }
 
-    // ─── Cancelar reintentos en curso ──────────────────────────────────────────
-
     function cancelPendingRetries() {
-        if (loadRetryTimeout) {
-            clearTimeout(loadRetryTimeout);
-            loadRetryTimeout = null;
-        }
+        if (loadRetryTimeout) { clearTimeout(loadRetryTimeout); loadRetryTimeout = null; }
         loadRetryCount = 0;
     }
-
-    // ─── Mostrar error de sesión permanente ────────────────────────────────────
 
     function showPermanentSessionError() {
         permanentError = true;
         cancelPendingRetries();
-
         if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
 
         if (inputSearch) {
@@ -106,19 +88,19 @@ geotab.addin.reeferMonitor = function (api, state) {
             'Sesión no disponible',
             'No se puede conectar con el servidor de Geotab.<br><br>' +
             '<strong>Causa más probable:</strong><br>' +
-            'Otro dispositivo (móvil u ordenador) tiene la sesión activa con este mismo usuario.<br><br>' +
+            'Otro dispositivo (móvil u ordenador) tiene la sesión activa con este mismo usuario, o la sesión ha caducado.<br><br>' +
             '<strong>Solución:</strong><br>' +
-            '1. Cierra Geotab Drive en el otro dispositivo.<br>' +
+            '1. Cierra sesión en otros dispositivos.<br>' +
             '2. Pulsa <strong>"Recargar"</strong> para reconectar.',
             '🔄 Recargar página',
             function() { window.location.reload(); }
         );
     }
 
-    // ─── Carga de la lista de dispositivos (con reintentos limitados) ──────────
+    // ─── Carga de la lista de dispositivos ─────────────────────────────────────
 
-    function loadDeviceList(apiRef, onSuccess) {
-        if (permanentError) return; // No intentar nada si la sesión está muerta
+    function loadDeviceList(onSuccess) {
+        if (permanentError) return;
 
         if (inputSearch) {
             inputSearch.placeholder = loadRetryCount === 0
@@ -126,23 +108,23 @@ geotab.addin.reeferMonitor = function (api, state) {
                 : 'Conectando... (intento ' + loadRetryCount + '/' + MAX_RETRIES + ')';
         }
 
-        apiRef.call('Get', { typeName: 'Device' }, function(devices) {
-            // Éxito: limpiar estado de error
+        // Se usa currentApi siempre (que se actualiza en focus)
+        currentApi.call('Get', { typeName: 'Device' }, function(devices) {
             cancelPendingRetries();
             permanentError = false;
-            if (inputSearch) {
-                inputSearch.disabled = false;
-            }
+            if (inputSearch) inputSearch.disabled = false;
 
             devices.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
             deviceMap = {};
             if (dataList) dataList.innerHTML = '';
+            
             devices.forEach(function(d) {
                 if (d.name) {
                     var option = document.createElement('option');
                     option.value = d.name;
                     if (dataList) dataList.appendChild(option);
-                    deviceMap[d.name] = d.id;
+                    // Guardar en UPPERCASE y sin espacios al inicio/fin para búsquedas robustas
+                    deviceMap[d.name.trim().toUpperCase()] = d.id;
                 }
             });
 
@@ -156,21 +138,18 @@ geotab.addin.reeferMonitor = function (api, state) {
                           loadRetryCount + '):', error && error.code, error && error.data && error.data.type);
 
             if (isNetworkError(error) || (error && error.code === 400)) {
-                // Error de red/sesión: reintentar hasta MAX_RETRIES veces
                 if (loadRetryCount < MAX_RETRIES) {
-                    var delay = Math.min(3000 * Math.pow(2, loadRetryCount), 12000); // 3s, 6s, 12s
+                    var delay = Math.min(3000 * Math.pow(2, loadRetryCount), 15000); 
                     loadRetryCount++;
                     console.warn('[reeferMonitor] Reintento ' + loadRetryCount + '/' + MAX_RETRIES +
                                  ' en ' + (delay / 1000) + 's...');
                     loadRetryTimeout = setTimeout(function() {
-                        loadDeviceList(apiRef, onSuccess);
+                        loadDeviceList(onSuccess);
                     }, delay);
                 } else {
-                    // Reintentos agotados: sesión permanentemente inválida
                     showPermanentSessionError();
                 }
             } else {
-                // Otro tipo de error
                 showPermanentSessionError();
             }
         });
@@ -200,14 +179,14 @@ geotab.addin.reeferMonitor = function (api, state) {
             search: { deviceSearch: { id: deviceId }, fromDate: fromDate }
         }]);
 
-        api.multiCall(calls, function(results) {
+        // Asegurarse de usar currentApi, NO el outerApi que podría estar caducado
+        currentApi.multiCall(calls, function(results) {
             var faultsData    = results.pop();
             var telemetryData = results;
             renderTable(telemetryData, diagKeys, faultsData.length);
             renderChart(telemetryData, diagKeys);
         }, function(error) {
             console.error('[reeferMonitor] Error telemetría:', error && error.code, error);
-            // Errores de telemetría no bloquean la app; el usuario puede reintentar
             window.__reeferAction = function() {
                 showInfo('Reintentando...');
                 loadReeferData(currentDeviceId);
@@ -335,15 +314,14 @@ geotab.addin.reeferMonitor = function (api, state) {
     return {
 
         initialize: function (api, state, callback) {
-            // Solo registrar listeners DOM (una única vez).
-            // NUNCA hacer llamadas a la API aquí: Geotab puede llamar a
-            // initialize() varias veces durante transiciones de sesión.
+            currentApi = api; // Guardar referencia inicial
             if (!listenersAttached) {
                 listenersAttached = true;
 
                 if (inputSearch) {
                     inputSearch.addEventListener('input', function() {
-                        var id = deviceMap[this.value];
+                        var name = this.value ? this.value.trim().toUpperCase() : '';
+                        var id = deviceMap[name];
                         if (id) loadReeferData(id);
                     });
                 }
@@ -354,41 +332,41 @@ geotab.addin.reeferMonitor = function (api, state) {
                             window.location.reload();
                             return;
                         }
-                        var name    = inputSearch ? inputSearch.value : '';
+                        var name    = inputSearch ? inputSearch.value.trim().toUpperCase() : '';
                         var foundId = deviceMap[name];
+                        
                         if (foundId) {
                             loadReeferData(foundId);
                         } else if (currentDeviceId) {
                             loadReeferData(currentDeviceId);
                         } else {
-                            alert('Por favor, selecciona un vehículo válido de la lista.');
+                            // En móvil alert() suele estar suprimido, usamos showError
+                            showError(
+                                'Vehículo no encontrado',
+                                'Por favor, selecciona un vehículo válido de la lista o comprueba que el nombre coincida exactamente.'
+                            );
                         }
                     });
                 }
             }
-
             callback();
         },
 
         focus: function (api, state) {
-            // Limpiar intervalo de datos anterior
+            currentApi = api; // ¡CRÍTICO! Actualizar con la sesión fresca de cada entrada
+
             if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
 
             console.log('[reeferMonitor] focus() state.device:',
                 state && state.device ? JSON.stringify(state.device) : '(sin dispositivo)');
 
-            // Si la sesión está muerta permanentemente, no reintentar.
-            // Geotab Drive puede llamar a focus() repetidamente; sin este guard
-            // se generaría un bucle infinito de reintentos.
             if (permanentError) {
                 console.warn('[reeferMonitor] focus() ignorado: permanentError activo. El usuario debe recargar la página.');
                 return;
             }
 
-            // Cancelar reintentos previos y empezar desde 0
             cancelPendingRetries();
 
-            // Leer el ID del vehículo asignado por Geotab Drive
             if (state && state.device) {
                 var devId = typeof state.device === 'string'
                     ? state.device
@@ -402,10 +380,9 @@ geotab.addin.reeferMonitor = function (api, state) {
                 }
             }
 
-            // Cargar la lista de dispositivos con el api fresco de esta sesión.
-            // Una vez cargada, lanzar los datos de telemetría.
-            loadDeviceList(api, function() {
+            loadDeviceList(function() {
                 if (currentDeviceId && inputSearch && !inputSearch.value) {
+                    // Restaurar nombre exacto (insensible a mayúsculas guardado, pero funciona)
                     var devName = Object.keys(deviceMap).find(function(k) {
                         return deviceMap[k] === currentDeviceId;
                     });
@@ -423,8 +400,6 @@ geotab.addin.reeferMonitor = function (api, state) {
 
         blur: function () {
             if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
-            // No cancelamos reintentos en blur() para no interrumpir la reconexión
-            // si el usuario navega momentáneamente fuera del add-in.
         }
     };
 };
