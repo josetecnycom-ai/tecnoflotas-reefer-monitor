@@ -20,14 +20,41 @@ geotab.addin.reeferMonitor = function (api, state) {
     let chartInstance = null;
     let deviceMap = {};
     let currentDeviceId = null;
+    let sessionError = false; // Flag para evitar peticiones tras error de sesión
 
     const inputSearch = document.getElementById('deviceSearch');
     const dataList = document.getElementById('devicesList');
     const btnRefresh = document.getElementById('btn-fetch-data');
     const panel = document.getElementById('results-panel');
 
+    function handleSessionError(error) {
+        // Detener el intervalo de refresco inmediatamente
+        if (refreshInterval) {
+            clearInterval(refreshInterval);
+            refreshInterval = null;
+        }
+        sessionError = true;
+        console.error("Sesión inválida detectada. Se han detenido todos los reintentos.", error);
+
+        if (inputSearch) {
+            inputSearch.placeholder = "⚠️ Error de sesión detectado.";
+            inputSearch.disabled = true;
+        }
+        if (panel) {
+            panel.innerHTML = `
+            <div style="padding: 15px; background: #fee2e2; color: #b91c1c; border-radius: 4px; border: 1px solid #f87171; margin-top: 15px;">
+                <strong style="font-size: 16px;">Error de Sesión Inválida</strong><br><br>
+                Se ha detectado un cruce de sesiones, probablemente por haber iniciado sesión en otro dispositivo móvil con este mismo usuario.<br><br>
+                <strong>Solución recomendada:</strong><br>
+                1. Cierra la sesión en Geotab.<br>
+                2. Limpia la caché y los datos de la aplicación en tu móvil.<br>
+                3. Vuelve a iniciar sesión.
+            </div>`;
+        }
+    }
+
     function loadReeferData(deviceId) {
-        if (!deviceId) return;
+        if (!deviceId || sessionError) return; // No hacer nada si la sesión está rota
         currentDeviceId = deviceId;
         
         const fromDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
@@ -51,9 +78,14 @@ geotab.addin.reeferMonitor = function (api, state) {
             renderChart(telemetryData, diagKeys);
         }, function(error) {
             console.error("Error cargando telemetría:", error);
-            panel.innerHTML = `<div style="padding: 15px; background: #fee2e2; color: #b91c1c; border-radius: 4px; border: 1px solid #f87171;">
-                <strong>Error de conexión:</strong> No se han podido descargar los datos del vehículo. Tu sesión podría haber caducado.
-            </div>`;
+            // Si el código de error es 400 (Bad Request), tratarlo como error de sesión
+            if (error && (error.code === 400 || error.code === "InvalidUserException" || String(error.message).toLowerCase().includes("bad request"))) {
+                handleSessionError(error);
+            } else {
+                panel.innerHTML = `<div style="padding: 15px; background: #fee2e2; color: #b91c1c; border-radius: 4px; border: 1px solid #f87171;">
+                    <strong>Error de conexión:</strong> No se han podido descargar los datos del vehículo. Inténtalo de nuevo.
+                </div>`;
+            }
         });
     }
 
@@ -193,23 +225,7 @@ geotab.addin.reeferMonitor = function (api, state) {
             }, function(error) {
                 // MANEJO DEL ERROR 400 DE SESIÓN
                 console.error("Error crítico cargando dispositivos:", error);
-                
-                if (inputSearch) {
-                    inputSearch.placeholder = "⚠️ Error de sesión detectado.";
-                    inputSearch.disabled = true; // Bloqueamos el buscador
-                }
-                
-                if (panel) {
-                    panel.innerHTML = `
-                    <div style="padding: 15px; background: #fee2e2; color: #b91c1c; border-radius: 4px; border: 1px solid #f87171; margin-top: 15px;">
-                        <strong style="font-size: 16px;">Error de Sesión Invalida</strong><br><br>
-                        Se ha detectado un cruce de sesiones, probablemente por haber iniciado sesión en otro dispositivo móvil con este mismo usuario.<br><br>
-                        <strong>Solución recomendada:</strong><br>
-                        1. Cierra la sesión en Geotab.<br>
-                        2. Limpia la caché y los datos de la aplicación en tu móvil.<br>
-                        3. Vuelve a iniciar sesión.
-                    </div>`;
-                }
+                handleSessionError(error);
             });
 
             inputSearch.addEventListener('input', function() {
