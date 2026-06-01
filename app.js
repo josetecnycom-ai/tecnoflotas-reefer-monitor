@@ -16,11 +16,12 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
     };
 
     const CHART_COLORS = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0891b2'];
-    const PLACEHOLDER_IDS = new Set(['b2', 'b1', '0', '']);
+    const PLACEHOLDER_IDS = new Set(['b2', 'b1', '0', '', 'NoDevice', 'Unknown', 'NoVehicle']);
 
     // ─── Estado interno ────────────────────────────────────────────────────────
     let currentApi        = outerApi; 
     let refreshInterval   = null;
+    let isDriveApp        = false; // Detecta si estamos en Geotab Drive
     // Se eliminan reintentos automáticos para evitar spam en mobile
     let chartInstance     = null;
     let deviceMap         = {};
@@ -72,7 +73,7 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
     let deviceListLoading = false;
 
     function loadDeviceList() {
-        if (deviceListLoaded || deviceListLoading || fallbackMode) return;
+        if (deviceListLoaded || deviceListLoading || fallbackMode || isDriveApp) return;
         deviceListLoading = true;
 
         if (inputSearch) {
@@ -304,6 +305,15 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
         initialize: function (api, state, callback) {
             currentApi = api; 
             
+            // Detección robusta de Geotab Drive
+            isDriveApp = !!(state && state.drive) || 
+                         window.location.href.indexOf('/drive/') !== -1 || 
+                         navigator.userAgent.indexOf('Geotab Drive') !== -1;
+
+            if (isDriveApp) {
+                enableFallbackMode(); // Forzar modo de búsqueda exacta para no descargar la flota entera
+            }
+            
             if (!listenersAttached) {
                 listenersAttached = true;
 
@@ -354,6 +364,7 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
                     ? state.device
                     : (state.device.id || state.device.Id || null);
 
+                // Evitar cargar datos si el ID es un placeholder como "NoDevice"
                 if (devId && !PLACEHOLDER_IDS.has(devId)) {
                     currentDeviceId = devId;
                 }
