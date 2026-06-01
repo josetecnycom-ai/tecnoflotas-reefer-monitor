@@ -64,12 +64,18 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
         currentApi.getSession(function(credentials, server) {
             var url = 'https://' + (server || 'my.geotab.com') + '/apiv1';
             
-            var payload = callsArray.map(function(call) {
-                return {
-                    method: call[0],
-                    params: Object.assign({}, call[1], { credentials: credentials })
-                };
-            });
+            var payload = {
+                method: "ExecuteMultiCall",
+                params: {
+                    calls: callsArray.map(function(call) {
+                        return {
+                            method: call[0],
+                            params: call[1]
+                        };
+                    }),
+                    credentials: credentials
+                }
+            };
             
             fetch(url, {
                 method: 'POST',
@@ -77,17 +83,13 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
                 body: JSON.stringify(payload)
             })
             .then(function(res) { return res.json(); })
-            .then(function(jsonArray) {
-                if (!Array.isArray(jsonArray)) {
-                    if (jsonArray.error) return errorCallback && errorCallback(jsonArray.error);
-                    return errorCallback && errorCallback("Invalid multiCall response");
+            .then(function(json) {
+                if (json.error) {
+                    return errorCallback && errorCallback(json.error);
                 }
-                var results = [];
-                for (var i = 0; i < jsonArray.length; i++) {
-                    if (jsonArray[i].error) {
-                        return errorCallback && errorCallback(jsonArray[i].error);
-                    }
-                    results.push(jsonArray[i].result);
+                var results = json.result;
+                if (!Array.isArray(results)) {
+                    return errorCallback && errorCallback("Invalid ExecuteMultiCall response");
                 }
                 if (successCallback) successCallback(results);
             })
