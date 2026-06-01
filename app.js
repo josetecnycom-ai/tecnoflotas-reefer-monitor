@@ -21,9 +21,7 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
     // ─── Estado interno ────────────────────────────────────────────────────────
     let currentApi        = outerApi; 
     let refreshInterval   = null;
-    let loadRetryTimeout  = null;
-    let loadRetryCount    = 0;
-    const MAX_RETRIES     = 2; // Rápido fallback al modo dinámico si falla
+    // Se eliminan reintentos automáticos para evitar spam en mobile
     let chartInstance     = null;
     let deviceMap         = {};
     let currentDeviceId   = null;
@@ -66,22 +64,24 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
         return t === 'NetworkError' || t === 'network';
     }
 
-    function cancelPendingRetries() {
-        if (loadRetryTimeout) { clearTimeout(loadRetryTimeout); loadRetryTimeout = null; }
-        loadRetryCount = 0;
-    }
+    // Variables antiguas eliminadas
 
     // ─── Carga de la lista de dispositivos (Autocomplete Masivo) ───────────────
 
-    function loadDeviceList() {
-        if (fallbackMode) return;
+    let deviceListLoaded = false;
+    let deviceListLoading = false;
 
-        if (inputSearch && loadRetryCount === 0) {
+    function loadDeviceList() {
+        if (deviceListLoaded || deviceListLoading || fallbackMode) return;
+        deviceListLoading = true;
+
+        if (inputSearch) {
             inputSearch.placeholder = 'Cargando vehículos...';
         }
 
-        currentApi.call('Get', { typeName: 'Device', resultsLimit: 5000 }, function(devices) {
-            cancelPendingRetries();
+        currentApi.call('Get', { typeName: 'Device' }, function(devices) {
+            deviceListLoaded = true;
+            deviceListLoading = false;
             if (inputSearch) inputSearch.disabled = false;
 
             devices.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
@@ -107,49 +107,39 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
             console.log('[reeferMonitor] Flota cargada masivamente: ' + devices.length + ' activos.');
 
         }, function(error) {
-            console.warn('[reeferMonitor] Fallo carga masiva de flota. Pasando a Autocompletado Dinámico.', error);
-
-            if (isNetworkError(error) || (error && error.code === 400)) {
-                if (loadRetryCount < MAX_RETRIES) {
-                    loadRetryCount++;
-                    loadRetryTimeout = setTimeout(loadDeviceList, 2000);
-                } else {
-                    enableFallbackMode();
-                }
-            } else {
-                enableFallbackMode();
-            }
+            console.warn('[reeferMonitor] Fallo carga masiva de flota.', error);
+            deviceListLoading = false;
+            enableFallbackMode();
         });
     }
 
     function enableFallbackMode() {
         fallbackMode = true;
-        cancelPendingRetries();
         if (inputSearch) {
-            inputSearch.placeholder = 'Escribe para buscar (ej: C54)...';
+            inputSearch.placeholder = 'Escribe el nombre exacto (ej: C54)...';
             inputSearch.disabled = false;
         }
     }
 
-    // ─── Carga dinámica de un solo vehículo (Fallback) ─────────────────────────
+    // ─── Carga de un solo vehículo (Fallback) ─────────────────────────
     
     function fetchAndLoadSingleDevice(nameStr) {
         showInfo('Buscando vehículo "' + nameStr + '"...');
         currentApi.call('Get', {
             typeName: 'Device',
-            search: { name: "%" + nameStr + "%" }
+            search: { name: nameStr }
         }, function(devices) {
             if (devices && devices.length > 0) {
-                var match = devices.find(function(d) { return d.name && d.name.toUpperCase() === nameStr; }) || devices[0];
+                var match = devices[0];
                 deviceMap[match.name.trim().toUpperCase()] = match.id;
                 if (inputSearch) inputSearch.value = match.name;
                 loadReeferData(match.id);
             } else {
-                showError('Vehículo no encontrado', 'No existe ningún vehículo que coincida con "' + nameStr + '".');
+                showError('Vehículo no encontrado', 'No se encontró un vehículo con el nombre exacto "' + nameStr + '".');
             }
         }, function(error) {
             console.error('[reeferMonitor] Error buscando vehículo individual:', error);
-            showError('Error de red', 'No se pudo buscar el vehículo. Por favor, reintenta.');
+            showError('Error de red', 'No se pudo buscar el vehículo. Verifica tu conexión.');
         });
     }
 
@@ -316,44 +306,20 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
             
             if (!listenersAttached) {
                 listenersAttached = true;
-                let debounceTimer = null;
 
                 if (inputSearch) {
+                    // Cargar la lista solo cuando el usuario haga clic o enfoque el buscador
+                    inputSearch.addEventListener('focus', function() {
+                        loadDeviceList();
+                    });
+
                     inputSearch.addEventListener('input', function() {
                         var name = this.value ? this.value.trim().toUpperCase() : '';
                         
-                        // 1. Si ya tenemos el ID exacto, cargar automáticamente
+                        // Si ya tenemos el ID exacto, cargar automáticamente
                         var id = deviceMap[name];
                         if (id) {
                             loadReeferData(id);
-                            return;
-                        }
-
-                        // 2. Autocompletado Dinámico para la App Móvil
-                        // Si falla la carga masiva, buscaremos en el servidor a medida que escribe
-                        if (fallbackMode && name.length >= 2) {
-                            if (debounceTimer) clearTimeout(debounceTimer);
-                            debounceTimer = setTimeout(function() {
-                                currentApi.call('Get', {
-                                    typeName: 'Device',
-                                    search: { name: "%" + name + "%" }
-                                }, function(devices) {
-                                    if (!devices || devices.length === 0) return;
-                                    
-                                    // Limpiar y rellenar el datalist para que aparezca el menú desplegable
-                                    if (dataList) dataList.innerHTML = '';
-                                    devices.forEach(function(d) {
-                                        if (d.name) {
-                                            var option = document.createElement('option');
-                                            option.value = d.name;
-                                            if (dataList) dataList.appendChild(option);
-                                            deviceMap[d.name.trim().toUpperCase()] = d.id;
-                                        }
-                                    });
-                                }, function(err) {
-                                    console.warn('[reeferMonitor] Error autocompletado dinámico', err);
-                                });
-                            }, 500); // Esperar medio segundo a que termine de teclear
                         }
                     });
                 }
@@ -400,8 +366,8 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
                 }, 60000);
             }
 
-            // Intento de carga masiva para el navegador
-            loadDeviceList();
+            // No cargar la lista de dispositivos masivamente al inicio.
+            // Se cargará solo si el usuario interactúa con el buscador (focus).
         },
 
         blur: function () {
