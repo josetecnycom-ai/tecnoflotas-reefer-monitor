@@ -16,18 +16,86 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
     };
 
     const CHART_COLORS = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0891b2'];
-    const PLACEHOLDER_IDS = new Set(['b2', 'b1', '0', '', 'NoDevice', 'Unknown', 'NoVehicle']);
+    const PLACEHOLDER_IDS = new Set(['0', '', 'NoDevice', 'Unknown', 'NoVehicle']);
 
     // ─── Estado interno ────────────────────────────────────────────────────────
     let currentApi        = outerApi; 
     let refreshInterval   = null;
-    let isDriveApp        = false; // Detecta si estamos en Geotab Drive
-    // Se eliminan reintentos automáticos para evitar spam en mobile
+    let isDriveApp        = false; 
     let chartInstance     = null;
     let deviceMap         = {};
     let currentDeviceId   = null;
     let listenersAttached = false;
     let fallbackMode      = false; 
+
+    // ─── Bypassing Drive Proxy ─────────────────────────────────────────────────
+    // El proxy interno de la App Drive (launcher.pack.js) bloquea muchas peticiones (como Get Device)
+    // y falla si la App se queda en un estado inconsistente. Bypasseamos el proxy haciendo
+    // peticiones HTTP directas al servidor de Geotab para garantizar que funcione siempre.
+
+    function directCall(method, params, successCallback, errorCallback) {
+        currentApi.getSession(function(credentials, server) {
+            var url = 'https://' + (server || 'my.geotab.com') + '/apiv1';
+            var payload = {
+                method: method,
+                params: Object.assign({}, params, { credentials: credentials })
+            };
+            
+            fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(function(res) { return res.json(); })
+            .then(function(json) {
+                if (json.error) {
+                    if (errorCallback) errorCallback(json.error);
+                } else {
+                    if (successCallback) successCallback(json.result);
+                }
+            })
+            .catch(function(err) {
+                if (errorCallback) errorCallback(err);
+            });
+        });
+    }
+
+    function directMultiCall(callsArray, successCallback, errorCallback) {
+        currentApi.getSession(function(credentials, server) {
+            var url = 'https://' + (server || 'my.geotab.com') + '/apiv1';
+            
+            var payload = callsArray.map(function(call) {
+                return {
+                    method: call[0],
+                    params: Object.assign({}, call[1], { credentials: credentials })
+                };
+            });
+            
+            fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(function(res) { return res.json(); })
+            .then(function(jsonArray) {
+                if (!Array.isArray(jsonArray)) {
+                    if (jsonArray.error) return errorCallback && errorCallback(jsonArray.error);
+                    return errorCallback && errorCallback("Invalid multiCall response");
+                }
+                var results = [];
+                for (var i = 0; i < jsonArray.length; i++) {
+                    if (jsonArray[i].error) {
+                        return errorCallback && errorCallback(jsonArray[i].error);
+                    }
+                    results.push(jsonArray[i].result);
+                }
+                if (successCallback) successCallback(results);
+            })
+            .catch(function(err) {
+                if (errorCallback) errorCallback(err);
+            });
+        });
+    }
 
     // ─── Referencias DOM ───────────────────────────────────────────────────────
     const inputSearch = document.getElementById('deviceSearch');
@@ -73,14 +141,15 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
     let deviceListLoading = false;
 
     function loadDeviceList() {
-        if (deviceListLoaded || deviceListLoading || fallbackMode || isDriveApp) return;
+        if (deviceListLoaded || deviceListLoading) return;
         deviceListLoading = true;
 
         if (inputSearch) {
             inputSearch.placeholder = 'Cargando vehículos...';
         }
 
-        currentApi.call('Get', { typeName: 'Device' }, function(devices) {
+        // Bypassear el proxy para descargar la lista completa sin ser bloqueados
+        directCall('Get', { typeName: 'Device' }, function(devices) {
             deviceListLoaded = true;
             deviceListLoading = false;
             if (inputSearch) inputSearch.disabled = false;
@@ -126,7 +195,7 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
     
     function fetchAndLoadSingleDevice(nameStr) {
         showInfo('Buscando vehículo "' + nameStr + '"...');
-        currentApi.call('Get', {
+        directCall('Get', {
             typeName: 'Device',
             search: { name: nameStr }
         }, function(devices) {
@@ -170,7 +239,7 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
             search: { deviceSearch: { id: deviceId }, fromDate: fromDate }
         }]);
 
-        currentApi.multiCall(calls, function(results) {
+        directMultiCall(calls, function(results) {
             var faultsData    = results.pop();
             var telemetryData = results;
             renderTable(telemetryData, diagKeys, faultsData.length);
@@ -309,10 +378,6 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
             isDriveApp = !!(state && state.drive) || 
                          window.location.href.indexOf('/drive/') !== -1 || 
                          navigator.userAgent.indexOf('Geotab Drive') !== -1;
-
-            if (isDriveApp) {
-                enableFallbackMode(); // Forzar modo de búsqueda exacta para no descargar la flota entera
-            }
             
             if (!listenersAttached) {
                 listenersAttached = true;
@@ -359,15 +424,32 @@ geotab.addin.reeferMonitor = function (outerApi, outerState) {
         focus: function (api, state) {
             if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
 
-            if (state && state.device) {
+            var foundId = null;
+
+            // 1. Primero intentar obtener el ID del remolque (frigorífico)
+            if (state && state.trailers && state.trailers.length > 0) {
+                var trailerId = typeof state.trailers[0] === 'string'
+                    ? state.trailers[0]
+                    : (state.trailers[0].id || state.trailers[0].Id || null);
+
+                if (trailerId && !PLACEHOLDER_IDS.has(trailerId)) {
+                    foundId = trailerId;
+                }
+            }
+
+            // 2. Si no hay remolque, intentar obtener el ID del vehículo
+            if (!foundId && state && state.device) {
                 var devId = typeof state.device === 'string'
                     ? state.device
                     : (state.device.id || state.device.Id || null);
 
-                // Evitar cargar datos si el ID es un placeholder como "NoDevice"
                 if (devId && !PLACEHOLDER_IDS.has(devId)) {
-                    currentDeviceId = devId;
+                    foundId = devId;
                 }
+            }
+
+            if (foundId) {
+                currentDeviceId = foundId;
             }
 
             if (currentDeviceId) {
